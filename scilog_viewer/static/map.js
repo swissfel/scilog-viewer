@@ -2,16 +2,20 @@
 // outline it can replace. Headings, text, lists, tables, code, plots and
 // images keep their shape, so a figure or a table is found by its look; a
 // click jumps to that element in the flow. The posts in view are marked and
-// the map follows the reading position (except while the mouse is on it).
+// the map follows the reading position -- until the map is scrolled by hand;
+// then it stays put until the flow is clicked again.
 "use strict";
 
-const mapState = { on: false, hover: false, visible: new Set(), cache: new Map() };
+const mapState = { on: false, detached: false, visible: new Set(), cache: new Map() };
 let mapObserver = null;
 
 function setPane(mode) {
+  if (!["headings", "outline", "map"].includes(mode)) mode = "headings";
   mapState.on = mode === "map";
-  $("#outline-tree").hidden = mapState.on;
-  $("#map").hidden = !mapState.on;
+  $("#outline-tree").hidden = mode !== "outline";
+  $("#map").hidden = mode !== "map";
+  $("#headings").hidden = mode !== "headings";
+  if (typeof setHeadingsPane === "function") setHeadingsPane(mode === "headings");
   document.querySelectorAll("#pane-tabs button").forEach((b) => b.classList.toggle("active", b.dataset.pane === mode));
   storageSet("eco-scilog-pane", mode);
   renderMap();
@@ -36,7 +40,7 @@ function renderMap() {
       frag.append(el("div", { class: "m-day", title: "Go to this day", onclick: () => jumpTo(document.querySelector(`.day[data-day="${k}"]`)) }, dayTitle(p.t)));
       day = k;
     }
-    const key = `${p.id}|${p.updated || ""}|${cpl}`;
+    const key = `${p.id}|${p.updated || ""}|${cpl}|${p.comments?.length || 0}|${p.quote ? 1 : 0}`;
     let card = mapState.cache.get(p.id);
     if (!card || card.dataset.key !== key) {
       card = mapCard(p, cpl);
@@ -53,7 +57,8 @@ function renderMap() {
 
 function mapCard(p, cpl) {
   const card = el("div", { class: "m-post", "data-post": p.id, title: `${clock(p.t)} ${shortName(p.author)}${p.title ? " · " + p.title : ""}` });
-  card.append(el("div", { class: "m-meta", onclick: () => jumpToPost(p.id) }, `${clock(p.t)} ${shortName(p.author)}`));
+  card.append(el("div", { class: "m-meta", onclick: () => jumpToPost(p.id) }, `${clock(p.t)} ${shortName(p.author)} `, ...postMarks(p)));
+  if (p.quote) card.append(el("div", { class: "m-reply m-el", title: `reply to: ${p.quote.text.slice(0, 80)}` }));
   const t = document.createElement("template");
   t.innerHTML = p.html;  // a template: nothing in it loads or runs
   [...t.content.children].forEach((node, i) => {
@@ -63,6 +68,16 @@ function mapCard(p, cpl) {
     g.addEventListener("click", (ev) => { ev.stopPropagation(); jumpToElement(p.id, i); });
     card.append(g);
   });
+  if (p.comments?.length) {
+    const c = el("div", { class: "m-comments m-el", title: `${p.comments.length} comment${p.comments.length > 1 ? "s" : ""}` },
+      ...p.comments.slice(0, 4).map(() => el("span", { class: "m-line" })));
+    c.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      const box = document.querySelector(`#p-${p.id} .comments`);
+      if (box) { box.classList.add("open"); box.scrollIntoView({ block: "center" }); }
+    });
+    card.append(c);
+  }
   card.addEventListener("click", () => jumpToPost(p.id));
   return card;
 }
@@ -122,11 +137,9 @@ function plotGlyph() {
 function glyph(node, cpl) {
   const tag = node.tagName.toLowerCase();
   if (/^h[1-6]$/.test(tag)) {
-    const len = node.textContent.trim().length;
-    if (!len) return null;
-    const bar = el("div", { class: `m-h m-${tag}` });
-    bar.style.width = `${Math.min(100, Math.max(12, Math.round(len * 100 / (cpl * (tag === "h1" || tag === "h2" ? 0.55 : 0.7)))))}%`;
-    return bar;
+    const text = node.textContent.replace(/\s+/g, " ").trim();
+    if (!text) return null;
+    return el("div", { class: `m-h m-${tag}`, text, title: text });  // headings readable, in small type
   }
   if (tag === "hr") return el("div", { class: "m-hr" });
   if (node.classList.contains("plot") || node.querySelector(".plot")) return plotGlyph();
@@ -188,7 +201,7 @@ function observeForMap() {
 }
 
 function followReading() {
-  if (mapState.hover || !mapState.visible.size) return;
+  if (mapState.detached || !mapState.visible.size) return;
   const pane = $("#outline");
   const cards = [...mapState.visible].map((id) => mapState.cache.get(id)).filter(Boolean);
   if (!cards.length) return;
@@ -204,15 +217,25 @@ function followReading() {
 (function setUpMap() {
   document.querySelectorAll("#pane-tabs button").forEach((b) => (b.onclick = () => setPane(b.dataset.pane)));
   const map = $("#map");
-  map.addEventListener("mouseenter", () => (mapState.hover = true));
-  map.addEventListener("mouseleave", () => { mapState.hover = false; followReading(); });
+  // scrolling the map by hand (wheel, touch, its scroll bar) stops it following the flow;
+  // a click into the flow brings it back to the reading position
+  const pane = $("#outline");
+  const detach = () => { if (mapState.on) mapState.detached = true; };
+  pane.addEventListener("wheel", detach, { passive: true });
+  pane.addEventListener("touchstart", detach, { passive: true });
+  pane.addEventListener("pointerdown", (e) => { if (e.target === pane) detach(); });  // the scroll bar
+  $("#flow").addEventListener("pointerdown", () => {
+    if (!mapState.detached) return;
+    mapState.detached = false;
+    followReading();
+  });
   document.addEventListener("keydown", (e) => {
     if (e.target.closest("input, textarea, [contenteditable], select")) return;
-    if (e.key === "m") {
+    if (e.key === "m" || e.key === "h" || e.key === "s") {
       document.body.classList.remove("no-outline");
-      setPane(mapState.on ? "outline" : "map");
+      const want = { m: "map", h: "headings", s: "outline" }[e.key];
+      setPane(storageGet("eco-scilog-pane") === want && want !== "headings" ? "headings" : want);
     }
   });
   window.addEventListener("resize", () => { clearTimeout(setUpMap.t); setUpMap.t = setTimeout(() => mapState.on && renderMap(), 300); });
-  if (storageGet("eco-scilog-pane") === "map") setPane("map");
 })();

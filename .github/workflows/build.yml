@@ -1,0 +1,57 @@
+# The SciLog viewer as one program per system. Runs on demand and for tags
+# v*; a tag also makes a release with the programs attached.
+name: build
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install ".[dev]"
+      - run: pytest -q
+  program:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04, name: scilog-viewer-linux-x86_64 }
+          - { os: windows-latest, name: scilog-viewer-windows-x86_64.exe }
+          - { os: macos-14, name: scilog-viewer-macos-arm64 }
+          - { os: macos-13, name: scilog-viewer-macos-x86_64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install ".[build]"
+      - run: sh packaging/build.sh
+        shell: bash
+      - name: smoke test (starts, serves the page, stops)
+        shell: bash
+        run: |
+          exe=dist/scilog-viewer; [ -f dist/scilog-viewer.exe ] && exe=dist/scilog-viewer.exe
+          python packaging/smoke_test.py "$exe"
+      - name: name it
+        shell: bash
+        run: |
+          src=dist/scilog-viewer; [ -f dist/scilog-viewer.exe ] && src=dist/scilog-viewer.exe
+          mkdir out && cp "$src" "out/${{ matrix.name }}"
+      - uses: actions/upload-artifact@v4
+        with: { name: "${{ matrix.name }}", path: "out/${{ matrix.name }}" }
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: program
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: programs, merge-multiple: true }
+      - uses: softprops/action-gh-release@v2
+        with: { files: "programs/*" }

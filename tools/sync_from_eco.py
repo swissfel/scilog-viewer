@@ -41,6 +41,7 @@ import json
 import os
 import re
 import stat
+import sys
 import time
 from pathlib import Path
 
@@ -108,9 +109,11 @@ def reader(url=URL, session=None, timeout=30):
 
 
 def can_open_browser():
-    """A browser can be started here: a display, and not over ssh."""
+    """A browser can be started here: not over ssh, and on Linux a display."""
     if os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"):
         return False
+    if sys.platform in ("win32", "darwin"):
+        return True
     return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
@@ -220,6 +223,24 @@ writes need a header only the page itself sends and the page's own origin.
 """'''
 
 
+LAUNCH = '''"""The `scilog-viewer` command and the built programs: start the viewer,
+open it in the browser, run until the window (or Ctrl-C) ends it."""
+
+import runpy
+import sys
+
+
+def main():
+    if getattr(sys, "frozen", False) and len(sys.argv) == 1:
+        print("SciLog viewer -- close this window to stop it.", flush=True)
+    runpy.run_module("scilog_viewer", run_name="__main__", alter_sys=True)
+
+
+if __name__ == "__main__":
+    main()
+'''
+
+
 def main(eco):
     eco = Path(eco).resolve()
     src = eco / "eco" / "scilog_app"
@@ -232,11 +253,13 @@ def main(eco):
         if js.suffix in (".js", ".html", ".css"):
             js.write_text(js.read_text().replace("eco SciLog viewer", "SciLog viewer").replace("~/.eco/scilog_app.json", "~/.config/scilog-viewer/config.json"))
     (PKG / "client.py").write_text(client(eco))
+    (PKG / "launch.py").write_text(LAUNCH)
     tests = HERE / "tests"
     tests.mkdir(exist_ok=True)
     t = (eco / "tests" / "test_scilog_app.py").read_text()
     t = re.sub(r"from _light_eco import ensure_eco_importable\n+ensure_eco_importable\(\)\n", "", t)
-    t = t.replace("eco.logs_scilog._shared_account", "scilog_viewer.client._shared_account").replace('"""eco.scilog_app:', '"""scilog_viewer:')
+    t = t.replace('"eco.logs_scilog.', '"scilog_viewer.client.').replace('"""eco.scilog_app:', '"""scilog_viewer:')
+    t = t.replace("from eco import logs_scilog\n", "from scilog_viewer import client as logs_scilog\n")
     t = t.replace("from eco.scilog_app import content", "from scilog_viewer import content")
     t = t.replace("from eco.scilog_app.server import", "from scilog_viewer.server import")
     (tests / "test_viewer.py").write_text(t)

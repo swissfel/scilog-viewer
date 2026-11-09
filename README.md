@@ -15,18 +15,52 @@ Read and write [SciLog](https://scilog.psi.ch), PSI's electronic logbook, in the
 
 ## Run it
 
+**As a program** (no Python needed): download the one for your system from the
+[releases](../../releases) (or the latest [build](../../actions/workflows/build.yml) run's artifacts) and start it:
+
+| system | file |
+|---|---|
+| Linux (x86-64) | `scilog-viewer-linux-x86_64` (make it executable: `chmod +x`) |
+| Windows | `scilog-viewer-windows-x86_64.exe` |
+| macOS (Apple silicon / Intel) | `scilog-viewer-macos-arm64` / `-x86_64` (unsigned: right-click, Open, the first time) |
+
+It opens the viewer in your browser and runs until its window is closed.
+
+**With Python:**
+
 ```bash
-pip install -e .            # tornado and requests; or use any environment that has them
-python -m scilog_viewer --token   # once: paste your SciLog token (see below)
-python -m scilog_viewer           # prints http://localhost:8798/?token=... and opens it
+pip install -e .                  # tornado, requests, nh3
+python -m scilog_viewer           # or: scilog-viewer
 ```
 
-The token is SciLog's own login token: log in at https://scilog.psi.ch, open the browser's developer console
-(F12) and run `copy(localStorage.id_token)`. It is kept in `~/.config/scilog-viewer/token` (mode 600) and lasts
-about two weeks. `$SCILOG_TOKEN` works too, and eco's `~/.eco/scilog_token` is used if present. Never keep a
-personal token on an account several people use.
+### The token
 
-From another machine, forward the port: `ssh -L 8798:localhost:8798 host`, then open the printed address.
+The viewer reads and writes SciLog with your own token. The first time (and whenever the token has run out) the page
+asks for it and says how to get it:
+
+1. log in at https://scilog.psi.ch;
+2. copy the token: on a computer press F12, Console, `copy(localStorage.id_token)`; on a phone, or without the
+   developer tools, once make a bookmark with the address
+   `javascript:void(prompt('SciLog token (select all, copy):',localStorage.id_token))` and open it while SciLog is
+   shown (Android Chrome: type the bookmark's name in the address bar);
+3. paste it into the viewer's window.
+
+The viewer checks it with SciLog and keeps it in `~/.config/scilog-viewer/token` (mode 600). **A token lasts 14 days
+from the login and cannot be renewed**; three days before, a badge in the bar says so. `python -m scilog_viewer --token`
+and `$SCILOG_TOKEN` work too, and eco's `~/.eco/scilog_token` is used if present. Never keep a personal token on an
+account several people use.
+
+### From a phone
+
+The viewer is a small local server plus a web page; SciLog's API does not accept calls from pages served elsewhere
+(no CORS), so a page alone (e.g. on GitHub Pages) cannot do it. Ways that work:
+
+- **through a computer that runs it:** `ssh -L 8798:localhost:8798 that-computer` from the phone (e.g. Termux or
+  any SSH app with port forwarding), then open the printed address on the phone;
+- **on the phone itself** (Android, untested so far): in [Termux](https://termux.dev),
+  `pkg install python rust && pip install git+https://github.com/swissfel/scilog-dev && scilog-viewer --no-browser`,
+  then open the printed address in the phone's browser;
+- an Android app wrapping the same server and page (a WebView) is possible; see "Where this could go".
 
 ## What it may do
 
@@ -51,6 +85,14 @@ from an eco checkout, leaving out what is eco-specific, until eco uses this pack
 
 ## Where this could go
 
-A purely static version (e.g. on GitHub Pages, no local server) needs two things from SciLog: its API answering
-requests from another site (CORS for that site), and its login sending the browser back to that site with a
-token. Both are SciLog configuration, not code here.
+- **An Android app:** the same server and page packed with Python (BeeWare Briefcase / Chaquopy) and shown in a
+  WebView; built by the same workflow as the desktop programs, installed from the APK (not the Play Store).
+- **A purely static version** (e.g. on GitHub Pages, no local server) needs two things from SciLog: its API
+  answering requests from another site (CORS for that site), and its login sending the browser back to that site
+  with a token. Both are SciLog configuration, not code here.
+
+## Building the programs
+
+`pip install ".[build]" && sh packaging/build.sh` makes `dist/scilog-viewer` for the system it runs on;
+`packaging/smoke_test.py dist/scilog-viewer` starts it and checks that it serves the page. The `build` workflow does
+both on Linux, Windows and macOS (on demand, and for tags `v*`, which also publish a release).

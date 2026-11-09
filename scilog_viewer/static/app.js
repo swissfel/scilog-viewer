@@ -101,19 +101,24 @@ function fillPicker(filter) {
 
 // -- the flow -----------------------------------------------------------------------------
 
-function postElement(p) {
+// SciLog refuses changes once a post's edit period is over (3 days unless it was given another)
+function editable(p) { return p.can_edit && (!p.expires || p.expires * 1000 > Date.now()); }
+function editableUntil(p) { return p.expires ? `${fullDate(p.expires)} ${clock(p.expires)}` : ""; }
+
+function postElement(p, pinned = false) {
   const actions = el("span", { class: "actions" },
-    p.can_edit && canWrite() ? el("button", { title: "Edit this post", onclick: (ev) => { ev.stopPropagation(); editPost(p.id); } }, "✏️ Edit") : null,
-    el("button", { title: "Copy a link to this post in its context", onclick: (ev) => { ev.stopPropagation(); copyLink(p.id); } }, "🔗"),
-    el("button", { title: "Show only this post (and copy a link to it)", onclick: (ev) => { ev.stopPropagation(); showOnly(p.id); } }, "⧉"));
+    el("button", { class: "more", title: "Edit, insert, link, share, pin …", "aria-label": "Actions for this post",
+      onclick: (ev) => { ev.stopPropagation(); openPostMenu(p, ev.currentTarget, pinned); } }, "⋯"));
   const head = el("div", { class: "post-head" },
     el("span", { class: "time", text: clock(p.t), title: new Date(p.t * 1000).toString() }),
     el("span", { class: "author", text: shortName(p.author), title: p.author }),
     ...p.tags.map((t) => el("span", { class: "tag", text: t })),
     p.edited ? el("span", { class: "edited", text: "edited", title: `${p.editor || ""} ${p.updated}` }) : null,
+    p.shared ? el("span", { class: "shared", text: "🌐", title: "Readable by everyone with a PSI account" }) : null,
+    p.inserted ? el("span", { class: "inserted", text: `inserted ${shortDate(p.written)} ${clock(p.written)}`, title: `Written ${fullDate(p.written)} ${clock(p.written)}, placed here afterwards` }) : null,
     actions);
   const body = el("div", { class: "body" });
-  if (p.can_edit) {
+  if (editable(p) && !pinned) {
     body.title = "Double-click to edit";
     body.addEventListener("dblclick", (ev) => {
       if (ev.target.closest("a, button, iframe, img")) return;
@@ -122,14 +127,70 @@ function postElement(p) {
     });
   }
   body.innerHTML = p.html;  // cleaned by the server (content.clean_post)
-  body.querySelectorAll("h1, h2, h3, h4, h5, h6").forEach((h, i) => (h.id = `h-${p.id}-${i}`));
+  body.querySelectorAll("h1, h2, h3, h4, h5, h6").forEach((h, i) => (h.id = `${pinned ? "pin-" : ""}h-${p.id}-${i}`));
   body.querySelectorAll(".plot").forEach(preparePlot);
   body.querySelectorAll("img").forEach((img) => img.addEventListener("click", () => lightbox(img.src)));
-  return el("article", { class: "post", id: `p-${p.id}`, "data-id": p.id }, head, body);
+  return el("article", { class: "post", id: `${pinned ? "pin-" : ""}p-${p.id}`, "data-id": p.id },
+    head, p.quote ? replyElement(p) : null, body, p.comments?.length ? commentsElement(p) : null);
+}
+
+// a reply: what it answers, as a one-line teaser that unfolds
+function replyElement(p) {
+  const q = p.quote, original = q.of ? state.byId.get(q.of) : null;
+  const who = original ? shortName(original.author) : "";
+  const teaser = q.text.replace(/\s+/g, " ").trim();
+  const full = el("blockquote", { class: "r-full" });
+  full.innerHTML = q.html;
+  full.querySelectorAll("img").forEach((img) => img.addEventListener("click", (ev) => { ev.stopPropagation(); lightbox(img.src); }));
+  const box = el("div", { class: "reply", title: "Click to unfold what this replies to" },
+    el("div", { class: "r-teaser" }, el("span", { class: "r-arrow", text: "↩" }),
+      el("span", { class: "r-who", text: `Reply${who ? ` to ${who}` : ""}${original ? ` (${shortDate(original.t)} ${clock(original.t)})` : ""}: ` }),
+      el("span", { class: "r-text", text: teaser.slice(0, 140) + (teaser.length > 140 ? " …" : "") || "(image)" })),
+    full,
+    original ? el("button", { class: "r-go", onclick: (ev) => { ev.stopPropagation(); jumpToPost(original.id); } }, "go to the original ↑") : null);
+  box.addEventListener("click", (ev) => { if (!ev.target.closest("a, button, img")) box.classList.toggle("open"); });
+  return box;
+}
+
+// comments: a chip that shows or hides them (c: all at once)
+function commentsElement(p) {
+  const n = p.comments.length;
+  const list = el("div", { class: "c-list" }, ...p.comments.map((c) => {
+    const body = el("div", { class: "c-body" });
+    body.innerHTML = c.html;
+    body.querySelectorAll("img").forEach((img) => img.addEventListener("click", () => lightbox(img.src)));
+    return el("div", { class: "comment", id: `c-${c.id}` },
+      el("div", { class: "c-head" }, el("strong", { text: shortName(c.author), title: c.author }), ` ${shortDate(c.t)} ${clock(c.t)}`), body);
+  }));
+  const box = el("div", { class: `comments${state.commentsOpen ? " open" : ""}` });
+  const chip = el("button", { class: "c-chip", title: "Show or hide the comments (c: all of them)", onclick: () => box.classList.toggle("open") },
+    `💬 ${n} comment${n > 1 ? "s" : ""}`);
+  box.append(chip, list);
+  return box;
 }
 
 function dayElement(t) {
   return el("h2", { class: "day", "data-day": dayKey(t) }, dayLabel(t), el("span", { class: "date", text: dayLabel(t) === fullDate(t) ? "" : shortDate(t) }));
+}
+
+// tools that stay at the top right of the flow, level with the day header stuck there
+// (a zero-height sticky strip, so the day headers further down carry nothing)
+function flowTools() {
+  const on = document.body.classList.contains("thumbs");
+  return el("div", { id: "flow-tools" },
+    el("button", { class: "day-thumbs", title: "Small figures: every image as a thumbnail (click one to see it large)", "aria-pressed": String(on),
+      onclick: (ev) => { ev.stopPropagation(); setThumbs(!document.body.classList.contains("thumbs")); } }, "🖼"));
+}
+
+// all figures as thumbnails, or as their authors sized them; the reading position stays on the same post
+function setThumbs(on) {
+  const flow = $("#flow");
+  const anchor = [...flow.querySelectorAll(".post")].find((p) => p.getBoundingClientRect().bottom > flow.getBoundingClientRect().top + 60);
+  const offset = anchor ? anchor.getBoundingClientRect().top : 0;
+  document.body.classList.toggle("thumbs", on);
+  document.querySelectorAll(".day-thumbs").forEach((b) => b.setAttribute("aria-pressed", String(on)));
+  storageSet("eco-scilog-thumbs", on ? "on" : "off");
+  if (anchor) flow.scrollTop += anchor.getBoundingClientRect().top - offset;
 }
 
 // -- views: which posts are shown ---------------------------------------------------------
@@ -156,6 +217,7 @@ function fillViews() {
   if (![...select.options].some((o) => o.value === state.view)) state.view = "all";
   select.value = state.view;
   select.hidden = false;
+  $("#views-button").hidden = false;
 }
 
 function setView(view) {
@@ -201,7 +263,7 @@ function renderFlow() {
     if (k !== day) { frag.append(dayElement(p.t)); day = k; }
     frag.append(postElement(p));
   }
-  flow.replaceChildren(frag);
+  flow.replaceChildren(flowTools(), frag);
   if (!state.posts.length) flow.append(el("p", { class: "hint", text: "This logbook has no posts yet." }));
   if (!state.only) flow.append(composerElement());
   observePosts();
@@ -253,7 +315,8 @@ function renderOutline() {
       const dayNode = el("div", { class: "o-day" },
         el("div", { class: "o-label", onclick: () => jumpTo(document.querySelector(`.day[data-day="${d.key}"]`)), text: dayTitle(d.t) }));
       for (const p of d.posts) {
-        dayNode.append(el("div", { class: "o-label o-post", "data-post": p.id, title: p.title, onclick: () => jumpToPost(p.id) }, `${clock(p.t)} ${p.title || (p.html.includes("<img") ? "🖼 image" : p.html.includes("plot") ? "📈 plot" : "(empty)")}`));
+        dayNode.append(el("div", { class: "o-label o-post", "data-post": p.id, title: p.title, onclick: () => jumpToPost(p.id) },
+          `${clock(p.t)} `, ...postMarks(p), `${p.title || (p.html.includes("<img") ? "🖼 image" : p.html.includes("plot") ? "📈 plot" : "(empty)")}`));
         const heads = [...p.html.matchAll(/<(h[1-6])\b[^>]*>(.*?)<\/h[1-6]>/gis)];
         heads.forEach((h, n) => {
           const text = h[2].replace(/<[^>]+>/g, "").trim();
@@ -274,6 +337,16 @@ function renderOutline() {
   });
   tree.replaceChildren(frag);
   if (typeof renderMap === "function") renderMap();
+  if (typeof renderHeadings === "function") renderHeadings();
+}
+
+// small marks for replies, comments and inserted posts (outline, map, headings)
+function postMarks(p) {
+  return [
+    p.quote ? el("span", { class: "mark-reply", text: "↩", title: "a reply" }) : null,
+    p.comments?.length ? el("span", { class: "mark-comments", text: `💬${p.comments.length}`, title: `${p.comments.length} comment${p.comments.length > 1 ? "s" : ""}` }) : null,
+    p.inserted ? el("span", { class: "mark-inserted", text: "⤓", title: "inserted afterwards" }) : null,
+  ].filter(Boolean);
 }
 
 let observer = null;
@@ -292,7 +365,7 @@ function observePosts() {
       }
     }
   }, { root: $("#flow"), rootMargin: "-10% 0px -80% 0px" });
-  document.querySelectorAll(".post").forEach((p) => observer.observe(p));
+  document.querySelectorAll("#flow .post").forEach((p) => observer.observe(p));
 }
 
 function jumpTo(target, flash = false) {
@@ -442,13 +515,28 @@ function showResults(q) {
 const docked = () => window.matchMedia("(min-width: 1100px)").matches;
 function closeResults() { $("#results").hidden = true; document.body.classList.remove("searching"); }
 
+// narrow screens: the search takes the whole bar and its results the whole page while it is in use
+const narrow = () => window.matchMedia("(max-width: 760px)").matches;
+function openSearch() {
+  document.body.classList.add("search-open");
+  const input = $("#search");
+  input.focus();
+  if (input.value.trim()) showResults(input.value);
+}
+function endSearch() {
+  closeResults();
+  document.body.classList.remove("search-open");
+  $("#search").blur();
+}
+
 function openResult(i) {
   const r = state.results[i];
   if (!r) return;
   state.active = i;
   document.querySelectorAll("#results .result").forEach((x, n) => x.classList.toggle("active", n === i));
   jumpToPost(r.post.id, r.words);
-  if (!docked()) closeResults();  // an overlay would cover the post
+  if (narrow()) endSearch();  // keyboard away, the post on the whole screen
+  else if (!docked()) closeResults();  // an overlay would cover the post
 }
 
 function clearMarks() {
@@ -527,9 +615,13 @@ function toNewest() {
 }
 
 function updateToBottom() {
-  const flow = $("#flow");
+  const flow = $("#flow"), button = $("#to-bottom");
   const far = flow.scrollHeight - flow.scrollTop - flow.clientHeight > flow.clientHeight;
-  $("#to-bottom").hidden = !far;
+  const n = state.unseen?.size || 0;
+  button.classList.toggle("news", n > 0);
+  button.innerHTML = n ? `&#8595; ${n} new post${n > 1 ? "s" : ""}` : "&#8595; Newest";
+  button.title = n ? "Posts written meanwhile, from elsewhere: go to the first one" : "To the newest post (End)";
+  button.hidden = !far && !n;
 }
 
 // The newest post is at the bottom. Images and posts only get their real
@@ -547,6 +639,75 @@ function holdBottom() {
   setTimeout(stop, 8000);
 }
 
+// Posts from elsewhere never move what is being read: the post at the top of the
+// flow is kept where it is across the redraw, and new posts are announced by the
+// "new posts" sign (bottom right) and a mark on them until they have been seen.
+function readingAnchor() {
+  const flow = $("#flow"), top = flow.getBoundingClientRect().top;
+  const node = [...flow.querySelectorAll(".post")].find((x) => x.getBoundingClientRect().bottom > top + 1);
+  return node ? { id: node.id, offset: node.getBoundingClientRect().top - top } : null;
+}
+
+function keepReading(anchor) {
+  const node = anchor && document.getElementById(anchor.id);
+  if (!node) return;
+  const flow = $("#flow");
+  flow.scrollTop += node.getBoundingClientRect().top - flow.getBoundingClientRect().top - anchor.offset;
+}
+
+state.unseen = new Set();
+let unseenObserver = null;
+function watchUnseen() {
+  if (unseenObserver) unseenObserver.disconnect();
+  unseenObserver = new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      if (!e.isIntersecting) continue;
+      const id = e.target.dataset.id;
+      state.unseen.delete(id);
+      unseenObserver.unobserve(e.target);
+      setTimeout(() => e.target.classList.remove("fresh"), 4000);  // the mark fades once seen
+    }
+    updateToBottom();
+  }, { root: $("#flow"), threshold: 0.3 });
+  for (const id of state.unseen) {
+    const node = document.getElementById(`p-${id}`);
+    if (node) { node.classList.add("fresh"); unseenObserver.observe(node); }
+  }
+  updateToBottom();
+}
+
+function toUnseen() {
+  const first = state.posts.find((p) => state.unseen.has(p.id));
+  if (first) jumpToPost(first.id); else toNewest();
+}
+
+// a post put into the flow where it belongs, without redrawing the others (so
+// the heights the browser has measured, and with them the reading position, stay)
+function placeInFlow(p) {
+  if (!state.posts.some((x) => x.id === p.id)) return;  // not in the current view
+  const flow = $("#flow");
+  const i = state.posts.findIndex((x) => x.id === p.id);
+  const prev = state.posts[i - 1], next = state.posts.slice(i + 1).find((x) => document.getElementById(`p-${x.id}`));
+  const node = postElement(p);
+  const nextNode = next && document.getElementById(`p-${next.id}`);
+  const parts = [];
+  if (!prev || dayKey(prev.t) !== dayKey(p.t)) {
+    const existing = flow.querySelector(`.day[data-day="${dayKey(p.t)}"]`);
+    if (!existing) parts.push(dayElement(p.t));
+  }
+  parts.push(node);
+  if (nextNode) {
+    // before the next post, or before its day header when the next post starts another day
+    const header = nextNode.previousElementSibling;
+    const before = next && dayKey(next.t) !== dayKey(p.t) && header?.classList.contains("day") ? header : nextNode;
+    before.before(...parts);
+  } else {
+    const composer = document.getElementById("composer");
+    if (composer) composer.before(...parts); else flow.append(...parts);
+  }
+  flow.querySelector(".hint")?.remove();
+}
+
 async function refresh() {
   if (!state.logbook || document.hidden) return;
   let data;
@@ -554,27 +715,24 @@ async function refresh() {
   catch (e) { setStatus(`offline: ${e.message}`); return; }
   state.since = data.since;
   if (!data.posts.length && !data.removed.length) { setStatus(); return; }
-  const flow = $("#flow");
-  const atBottom = flow.scrollHeight - flow.scrollTop - flow.clientHeight < 80;
+  const anchor = readingAnchor();
   let appended = 0;
-  for (const id of data.removed) { state.byId.delete(id); document.getElementById(`p-${id}`)?.remove(); }
+  for (const id of data.removed) { state.byId.delete(id); state.unseen.delete(id); document.getElementById(`p-${id}`)?.remove(); }
   for (const p of data.posts) {
     const old = state.byId.get(p.id);
     state.byId.set(p.id, p);
     if (old) document.getElementById(`p-${p.id}`)?.replaceWith(postElement(p));
-    else appended++;
+    else { appended++; state.unseen.add(p.id); }
   }
   state.all = [...state.byId.values()].sort((a, b) => a.t - b.t);
   applyView();
   fillViews();
   prepareSearch();
-  if (appended) {
-    renderFlow();
-    if (atBottom) flow.scrollTop = flow.scrollHeight;
-    toast(`${appended} new post${appended > 1 ? "s" : ""}`);
-  }
+  if (appended) for (const p of data.posts) if (!document.getElementById(`p-${p.id}`)) placeInFlow(p);
+  keepReading(anchor);
   renderOutline();
   observePosts();
+  watchUnseen();
   setStatus();
 }
 
@@ -601,7 +759,7 @@ function writeBlocker() {
 function updateWriteUi() {
   const button = $("#new-post"), why = writeBlocker();
   button.hidden = !state.logbook || (why && why !== "off-here");
-  button.innerHTML = why === "off-here" ? "&#9998; Allow writing here" : "&#10010; New post";
+  button.innerHTML = why === "off-here" ? '&#9998;<span class="lbl"> Allow writing here</span>' : '&#10010;<span class="lbl"> New post</span>';
   button.title = why === "off-here" ? "Writing to this logbook is off: switch it on to post and to edit your own posts" : "Write a new post (n)";
   const old = document.getElementById("composer");
   if (old) old.replaceWith(composerElement());
@@ -643,6 +801,13 @@ function newPost() {
   openEditor({ logbook: state.logbook.id, logbookName: state.logbook.name, onSaved: placeSaved });
 }
 
+function insertNear(id, where = "after") {
+  if (!canWrite()) { askToAllowWriting(); return; }
+  const p = state.byId.get(id);
+  openEditor({ logbook: state.logbook.id, logbookName: state.logbook.name, onSaved: placeSaved,
+    near: { id, where, label: `${dayTitle(p.t)} ${clock(p.t)} ${p.title ? `“${p.title.slice(0, 50)}”` : ""}` } });
+}
+
 function placeSaved(post) {
   state.byId.set(post.id, post);
   state.all = [...state.byId.values()].sort((a, b) => a.t - b.t);
@@ -678,6 +843,64 @@ function setStatus(extra) {
   const now = new Date();
   const shown = state.posts.length === state.all.length ? `${state.all.length} posts` : `${state.posts.length} of ${state.all.length} posts`;
   $("#status").textContent = extra || `${shown} · ${state.identity || ""}${canWrite() ? " · can write" : ""} · ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+  updateTokenBadge();
+}
+
+// -- the SciLog token: entered here, renewed here ------------------------------------------------
+// SciLog's token lasts 14 days from the login and cannot be renewed: then a new one is needed.
+
+const TOKEN_BOOKMARKLET = "javascript:void(prompt('SciLog token (select all, copy):',localStorage.id_token))";
+
+function updateTokenBadge() {
+  const t = state.token, badge = $("#token-badge");
+  if (!badge) return;
+  const left = t?.expires ? (t.expires * 1000 - Date.now()) / 86400000 : null;
+  badge.hidden = !(t && t.personal && left !== null && left < 3);
+  if (!badge.hidden) badge.textContent = left > 1 ? `🔑 token: ${Math.floor(left)} days left` : left > 0 ? `🔑 token: ${Math.max(1, Math.round(left * 24))} h left` : "🔑 token expired";
+}
+
+function openTokenDialog(status = state.token || {}) {
+  document.getElementById("token-dialog")?.remove();
+  const until = status.expires ? new Date(status.expires * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : null;
+  const input = el("textarea", { class: "tk-input", rows: "3", placeholder: "Paste the token here (eyJ…)", autocomplete: "off", spellcheck: "false" });
+  const note = el("div", { class: "tk-note" });
+  const save = el("button", { class: "primary" }, "Use this token");
+  const bm = el("code", { class: "tk-code", text: TOKEN_BOOKMARKLET });
+  const dialog = el("dialog", { id: "token-dialog" },
+    el("div", { class: "ed-head" }, el("strong", { text: "SciLog token" }), el("span", { class: "spacer" }),
+      el("button", { title: "Close", onclick: () => dialog.close() }, "✕")),
+    el("div", { class: "tk-body" },
+      el("p", { class: status.ok ? "" : "bad", text: status.ok
+        ? `Reading SciLog as ${status.identity}${until ? `; this token is valid until ${until}` : ""}.`
+        : `${status.why || "No token"}.` }),
+      el("p", { text: "The viewer reads and writes SciLog with your own token. SciLog issues it when you log in, and it lasts 14 days; then log in again and enter the new one here." }),
+      el("ol", {},
+        el("li", {}, "Log in at ", el("a", { href: "https://scilog.psi.ch", target: "_blank", rel: "noopener" }, "scilog.psi.ch"), " (in this browser or any other)."),
+        el("li", {}, "Copy the token, either way:",
+          el("ul", {},
+            el("li", {}, "on a computer: press F12, open Console, type ", el("code", { text: "copy(localStorage.id_token)" }), " and Enter;"),
+            el("li", {}, "on a phone, or without the developer tools: once, make a bookmark with this address, then open it while SciLog is shown (Android: type the bookmark's name in the address bar and pick it). It shows the token to copy:",
+              el("div", { class: "tk-row" }, bm, el("button", { onclick: () => copyText(TOKEN_BOOKMARKLET, "Bookmark address") }, "Copy"))))),
+        el("li", {}, "Paste it here:")),
+      input, note),
+    el("div", { class: "ed-foot" }, el("span", { class: "tk-safe", text: "Kept only on this computer, readable only by you." }), el("span", { class: "spacer" }), save));
+  if (!status.can_set && status.can_set !== undefined) { input.disabled = true; save.disabled = true; note.textContent = "This is a shared account: a personal token must not be kept here."; }
+  save.onclick = async () => {
+    save.disabled = true;
+    note.textContent = "Checking the token with SciLog …";
+    try {
+      const r = await fetch("/api/token/set", { method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json", "X-Eco-Scilog": "1" }, body: JSON.stringify({ token: input.value }) });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || r.statusText);
+      note.textContent = `Accepted: ${data.identity}. Reloading …`;
+      setTimeout(() => location.reload(), 600);
+    } catch (e) { note.textContent = `Not accepted: ${e.message}`; note.classList.add("bad"); save.disabled = false; }
+  };
+  dialog.addEventListener("close", () => dialog.remove());
+  document.body.append(dialog);
+  dialog.showModal();
+  input.focus();
 }
 
 function copyLink(id) {
@@ -691,6 +914,49 @@ function fromHash() {
   return { lb: h.get("lb"), post: h.get("post"), only: h.get("only") === "1" };
 }
 
+function toggleAllComments() {
+  state.commentsOpen = !state.commentsOpen;
+  storageSet("eco-scilog-comments", state.commentsOpen ? "open" : "closed");
+  document.querySelectorAll(".comments").forEach((c) => c.classList.toggle("open", state.commentsOpen));
+  toast(state.commentsOpen ? "Comments shown" : "Comments hidden");
+}
+state.commentsOpen = storageGet("eco-scilog-comments") === "open";
+if (storageGet("eco-scilog-thumbs") === "on") document.body.classList.add("thumbs");
+
+// -- the left pane's width: drag the line between it and the flow ------------------------------
+
+const PANE_DEFAULT = 300;
+function setPaneWidth(px, save = true) {
+  const w = Math.round(Math.max(160, Math.min(px, window.innerWidth * 0.6)));
+  document.documentElement.style.setProperty("--pane-width", `${w}px`);
+  if (save) storageSet("eco-scilog-pane-width", String(w));
+}
+
+function setUpResizer() {
+  const saved = parseInt(storageGet("eco-scilog-pane-width") || "", 10);
+  if (saved > 0) setPaneWidth(saved, false);
+  const bar = $("#pane-resizer");
+  bar.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    bar.setPointerCapture(e.pointerId);
+    const left = $("#outline").getBoundingClientRect().left;
+    document.body.classList.add("resizing");
+    const move = (ev) => setPaneWidth(ev.clientX - left, false);
+    const up = (ev) => {
+      bar.removeEventListener("pointermove", move);
+      bar.removeEventListener("pointerup", up);
+      bar.removeEventListener("pointercancel", up);
+      document.body.classList.remove("resizing");
+      setPaneWidth(ev.clientX - left);
+      if (typeof mapState !== "undefined" && mapState.on) renderMap();
+    };
+    bar.addEventListener("pointermove", move);
+    bar.addEventListener("pointerup", up);
+    bar.addEventListener("pointercancel", up);
+  });
+  bar.addEventListener("dblclick", () => { setPaneWidth(PANE_DEFAULT); try { localStorage.removeItem("eco-scilog-pane-width"); } catch (e) { /* */ } });
+}
+
 // -- start ---------------------------------------------------------------------------------------
 
 async function main() {
@@ -701,8 +967,15 @@ async function main() {
   if (storageGet("eco-scilog-outline") === "off") document.body.classList.add("no-outline");
   $("#logbook-button").onclick = () => showPicker($("#picker").hidden);
   $("#new-post").onclick = newPost;
-  $("#to-bottom").onclick = toNewest;
+  $("#to-bottom").onclick = () => (state.unseen.size ? toUnseen() : toNewest());
   $("#flow").addEventListener("scroll", updateToBottom, { passive: true });
+  $("#views-button").onclick = () => openViewsDialog();
+  $("#token-badge").onclick = () => openTokenDialog();
+  $("#status").onclick = () => openTokenDialog();
+  $("#status").title = "Click: the SciLog token (whose, until when, enter a new one)";  // views.js loads after this file
+  $("#search-button").onclick = openSearch;
+  $("#search-cancel").onclick = endSearch;
+  setUpResizer();
   $("#view").onchange = (e) => {
     if (e.target.value === "__views") { e.target.value = state.view; openViewsDialog(); }
     else setView(e.target.value);
@@ -734,19 +1007,22 @@ async function main() {
       document.querySelectorAll("#results .result")[state.active]?.scrollIntoView({ block: "nearest" });
       if (docked()) openResult(state.active);  // the post beside the list follows
     } else if (e.key === "Enter") { e.preventDefault(); openResult(state.active); }
-    else if (e.key === "Escape") { closeResults(); input.blur(); }
+    else if (e.key === "Escape") endSearch();
   };
   document.addEventListener("click", (e) => {
-    if (!e.target.closest("#search-wrap, #flow") || (!docked() && !e.target.closest("#search-wrap"))) closeResults();
+    if (!e.target.closest("#search-wrap, #flow, #search-button") || (!docked() && !e.target.closest("#search-wrap, #search-button"))) {
+      if (document.body.classList.contains("search-open")) endSearch(); else closeResults();
+    }
     if (!e.target.closest("#picker, #logbook-button")) $("#picker").hidden = true;
   });
   document.addEventListener("keydown", (e) => {
     if (e.target.closest("input, textarea, [contenteditable]")) return;
-    if (e.key === "/") { e.preventDefault(); input.focus(); input.select(); }
+    if (e.key === "/") { e.preventDefault(); if (narrow()) openSearch(); input.focus(); input.select(); }
     else if (e.key === "o") $("#toggle-outline").click();
     else if (e.key === "l") showPicker(true);
     else if (e.key === "n") newPost();
     else if (e.key === "End" || e.key === "G") { e.preventDefault(); toNewest(); }
+    else if (e.key === "c") toggleAllComments();
     else if (e.key === "v") $("#view").focus();
     else if (e.key === "Escape") { $("#picker").hidden = true; document.getElementById("lightbox")?.remove(); }
   });
@@ -758,6 +1034,15 @@ async function main() {
     else if (post) { if (state.only) showInContext(post); else jumpToPost(post); }
   });
 
+  let tok;
+  try { tok = await api("/api/token"); } catch (e) { tok = { ok: false, why: e.message, can_set: true }; }
+  state.token = tok;
+  if (!tok.ok) {
+    $("#flow").replaceChildren(el("div", { class: "hint" }, `SciLog cannot be read: ${tok.why}. `,
+      el("button", { onclick: () => openTokenDialog(tok) }, "Enter a SciLog token")));
+    openTokenDialog(tok);
+    return;
+  }
   try {
     const [me, books] = await Promise.all([api("/api/me"), api("/api/logbooks")]);
     state.identity = me.identity.split("<")[0].trim();

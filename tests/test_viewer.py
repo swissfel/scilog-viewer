@@ -1,6 +1,7 @@
 """scilog_viewer: posts cleaned and pointed at the local server, kept up to
 date incrementally, served only with the token, plots in their own origin."""
 import builtins
+import datetime
 import http.cookiejar
 import json
 import urllib.error
@@ -11,6 +12,7 @@ import pytest
 
 pytest.importorskip("tornado")
 
+from scilog_viewer import client as logs_scilog
 from scilog_viewer import content
 from scilog_viewer.server import ScilogApp, Store
 
@@ -63,7 +65,7 @@ class _FakeReader:
         return {"id": i, "createdAt": t, "updatedAt": updated or t, "createdBy": "ann@psi.ch", "updatedBy": "ann@psi.ch",
                 "tags": ["ARAMIS"], "textcontent": html, "files": [], "deleted": deleted, "parentId": LB}
 
-    def posts(self, logbook, updated_after=None):
+    def posts(self, logbook, updated_after=None, children=False):
         self.requests.append(updated_after)
         return [r for r in self.rows if not updated_after or r["updatedAt"] > updated_after]
 
@@ -352,3 +354,169 @@ def test_scilog_views_are_listed_told_apart_changed_and_deleted(tmp_path, monkey
     assert not readonly.views(LB)["can_edit"]
     with pytest.raises(PermissionError, match="not switched on"):
         readonly.change_view(LB, "68baa3c80000000000000001", None, {"name": "x"})
+
+
+class _Threads(_Writer):
+    """Posts with SciLog's order, a comment, a reply quoting another post, and comments arriving later."""
+
+    A, B, R = "a1" * 12, "b2" * 12, "c3" * 12
+
+    def __init__(self):
+        super().__init__()
+        a = self.row(self.A, "2026-11-01T10:00:00Z", "<h1>Run</h1><p>offset fixed?</p>")
+        b = self.row(self.B, "2026-11-01T12:00:00Z", "<p>later</p>")
+        r = self.row(self.R, "2026-11-01T13:00:00Z", "<p>yes, fixed</p>")
+        for row in (a, b, r):
+            order = int(datetime.datetime.fromisoformat(row["createdAt"].replace("Z", "+00:00")).timestamp() * 1e6)
+            row.update(defaultOrder=order, expiresAt="2026-11-04T10:00:00Z", updateACL=["p1"])
+        a["subsnippets"] = [{"id": "d4" * 12, "parentId": self.A, "linkType": "comment", "createdAt": "2026-11-01T11:00:00Z",
+                             "createdBy": "bob@psi.ch", "textcontent": "<p>looks good</p>", "files": [], "deleted": False}]
+        # a reply: the copy of what it answers carries no link, only the same text (and the original's expiry)
+        r["subsnippets"] = [{"id": "e5" * 12, "parentId": self.R, "linkType": "quote", "createdAt": "2026-11-01T13:00:00Z",
+                             "createdBy": "ann@psi.ch", "textcontent": "<h1>Run</h1><p>offset fixed?</p>", "files": [], "deleted": False,
+                             "expiresAt": "2026-11-04T10:00:00Z"}]
+        self.rows = [a, b, r]
+        self.kids = []
+
+    def children_since(self, updated_after):
+        return [k for k in self.kids if k["updatedAt"] > updated_after]
+
+    def create_post(self, payload):
+        row = super().create_post(payload)
+        row["id"] = "f6" * 12
+        row.update(createdAt="2026-11-06T08:00:00Z", updatedAt="2026-11-06T08:00:00Z", defaultOrder=payload.get("defaultOrder", 1800000000000000), expiresAt=payload.get("expiresAt"))
+        return row
+
+
+def test_comments_replies_and_scilogs_order_reach_the_page(tmp_path, monkeypatch):
+    monkeypatch.setattr("scilog_viewer.client._shared_account", lambda: None)
+    reader = _Threads()
+    store = Store(reader, cache_dir=tmp_path / "files", config={"write_logbooks": [LB]})
+    first = store.posts(LB)
+    a, b, r = first["posts"]
+    assert [c["text"].strip() for c in a["comments"]] == ["looks good"] and a["comments"][0]["author"] == "bob@psi.ch"
+    assert r["quote"]["of"] == reader.A and "offset fixed?" in r["quote"]["text"] and not b["quote"]
+    assert a["t"] == a["written"] and not a["inserted"] and a["expires"] == datetime.datetime(2026, 11, 4, 10, tzinfo=datetime.timezone.utc).timestamp()
+
+    # a comment written later does not touch its post's updatedAt; it is found all the same
+    reader.kids = [{"id": "a7" * 12, "parentId": reader.B, "linkType": "comment", "createdAt": "2026-11-05T09:00:00Z",
+                    "updatedAt": "2026-11-05T09:00:00Z", "createdBy": "ann@psi.ch", "textcontent": "<p>and now?</p>", "files": [], "deleted": False}]
+    later = store.posts(LB, first["since"])
+    assert [p["id"] for p in later["posts"]] == [reader.B] and later["posts"][0]["comments"][0]["text"].strip() == "and now?"
+    assert store.posts(LB, later["since"])["posts"] == []  # seen once
+
+    # a post inserted after A lands between A and B in SciLog's order, with the edit period asked for
+    saved = store.save(LB, None, "<h2>Alignment</h2>", [], edit_days=30, after=reader.A)
+    payload = reader.written[-1][1]
+    assert a["order"] < payload["defaultOrder"] < b["order"]
+    until = datetime.datetime.fromisoformat(payload["expiresAt"].replace("Z", "+00:00"))
+    assert 29.9 < (until - datetime.datetime.now(datetime.timezone.utc)).total_seconds() / 86400 <= 30
+    assert saved["inserted"] and a["t"] < saved["t"] < b["t"]
+    with pytest.raises(ValueError):
+        store.save(LB, None, "<p>x</p>", [], edit_days=0)
+    with pytest.raises(ValueError):
+        store.save(LB, None, "<p>x</p>", [], after="../x")
+
+
+def test_sharing_with_everyone_logged_in_covers_files_and_comments_first(tmp_path, monkeypatch):
+    monkeypatch.setattr("scilog_viewer.client._shared_account", lambda: None)
+    reader = _Threads()
+    a = reader.rows[0]
+    a.update(readACL=["p1"], files=[{"fileId": "ab" * 12}])
+    a["subsnippets"][0]["readACL"] = ["p1"]
+    reader.rows[1].update(createdBy="bob@psi.ch", updateACL=["p2"])
+    reader.files = {"ab" * 12: {"readACL": ["p1"]}}
+    reader.file_snippet = lambda f: reader.files[f]
+    reader.set_read_acl = lambda kind, i, acl: reader.written.append(("acl", kind, i, acl))
+    reader.post = lambda i: json.loads(json.dumps(next(r for r in reader.rows if r["id"] == i)))
+    store = Store(reader, cache_dir=tmp_path / "files", config={"write_logbooks": [LB]})
+    assert not store.posts(LB)["posts"][0]["shared"]
+
+    out = store.share(LB, reader.A, True)
+    acl = [w for w in reader.written if w[0] == "acl"]
+    assert [(k, i) for _, k, i, _ in acl] == [("filesnippet", "ab" * 12), ("basesnippets", "d4" * 12), ("basesnippets", reader.A)]
+    assert all("any-authenticated-user" in w[3] and "p1" in w[3] for w in acl) and out["shared"]
+
+    # once shared, sharing again changes nothing; unsharing removes only that role
+    a["readACL"] = acl[-1][3]
+    reader.files["ab" * 12]["readACL"] = acl[0][3]
+    n = len(reader.written)
+    store.share(LB, reader.A, True)
+    assert len(reader.written) == n
+    out = store.share(LB, reader.A, False)
+    assert [w[3] for w in reader.written[n:]] == [["p1"], ["p1"], ["p1"]] and not out["shared"]
+
+    # someone else's post: SciLog would refuse, so does the viewer
+    with pytest.raises(PermissionError):
+        store.share(LB, reader.B, True)
+
+
+def test_deleting_needs_a_delete_group_and_takes_the_post_off_the_page(tmp_path, monkeypatch):
+    monkeypatch.setattr("scilog_viewer.client._shared_account", lambda: None)
+    reader = _Threads()
+    reader.rows[0]["deleteACL"] = ["admin", "p1"]
+    reader.rows[1]["deleteACL"] = ["admin"]
+    reader.delete_post = lambda i: reader.written.append(("delete", i))
+    store = Store(reader, cache_dir=tmp_path / "files", config={"write_logbooks": [LB]})
+    a, b, _ = store.posts(LB)["posts"]
+    assert a["can_delete"] and not b["can_delete"]
+    assert store.delete(LB, reader.A) == {"removed": reader.A} and reader.written[-1] == ("delete", reader.A)
+    assert reader.A not in [p["id"] for p in store.posts(LB)["posts"]]
+    with pytest.raises(PermissionError):
+        store.delete(LB, reader.B)
+    store2 = Store(reader, cache_dir=tmp_path / "files2", config={"write_logbooks": []})
+    with pytest.raises(PermissionError):
+        store2.delete(LB, reader.B)
+
+
+def test_the_token_is_checked_with_scilog_before_it_is_kept(tmp_path, monkeypatch):
+    monkeypatch.setattr("scilog_viewer.client._shared_account", lambda: None)
+    reader = _Writer()
+    store = Store(reader, cache_dir=tmp_path / "files", config={"write_logbooks": [LB]})
+    store.logbooks["x"] = {}
+    status = store.token_status()
+    assert status["ok"] and status["personal"] and status["can_set"]
+
+    def claim(**c):
+        body = base64.urlsafe_b64encode(json.dumps(c).encode()).decode().rstrip("=")
+        return f"x.{body}.y"
+
+    with pytest.raises(ValueError, match="not a SciLog token"):
+        store.set_token("nonsense")
+    with pytest.raises(ValueError, match="expired"):
+        store.set_token(claim(exp=1))
+    kept, probed = [], []
+
+    class Probe:
+        def __init__(self, value, timeout=30):
+            self.value = value
+
+        def get(self, path, filt=None):
+            probed.append(self.value)
+            if self.value.endswith("refused"):
+                raise logs_scilog.TokenError("SciLog refused the token")
+
+    monkeypatch.setattr("scilog_viewer.client.Reader", Probe)
+    monkeypatch.setattr("scilog_viewer.client.save_token", lambda v, path=None: kept.append(v))
+    with pytest.raises(logs_scilog.TokenError):
+        store.set_token(claim(exp=4102444800)[:-1] + "refused")
+    assert kept == []  # refused by SciLog: not kept
+    good = claim(exp=4102444800, email="ann@psi.ch")
+    monkeypatch.setattr(Store, "token_status", lambda self: {"ok": True})
+    store.set_token(" Bearer " + good + "\n")
+    assert kept == [good] and probed[-1] == good and store.logbooks == {} and store._reader is None
+
+
+def test_pages_asked_for_under_another_name_are_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr("scilog_viewer.client._shared_account", lambda: None)
+    app = ScilogApp(port=0, store=Store(_Writer(), cache_dir=tmp_path / "files", config={}), token="sesame").start()
+    try:
+        for host, code in (("localhost", 200), ("127.0.0.1", 200), ("evil.example", 403)):
+            req = urllib.request.Request(f"http://127.0.0.1:{app.port}/api/token?token=sesame", headers={"Host": f"{host}:{app.port}"})
+            try:
+                got = urllib.request.urlopen(req, timeout=10).status
+            except urllib.error.HTTPError as e:
+                got = e.code
+            assert got == code, host
+    finally:
+        app.stop()

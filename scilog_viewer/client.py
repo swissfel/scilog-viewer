@@ -22,6 +22,7 @@ import json
 import os
 import re
 import stat
+import sys
 import time
 from pathlib import Path
 
@@ -89,9 +90,11 @@ def reader(url=URL, session=None, timeout=30):
 
 
 def can_open_browser():
-    """A browser can be started here: a display, and not over ssh."""
+    """A browser can be started here: not over ssh, and on Linux a display."""
     if os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"):
         return False
+    if sys.platform in ("win32", "darwin"):
+        return True
     return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
@@ -309,6 +312,22 @@ class Reader:
         """POST basesnippets: a new post (snippetType/linkType "paragraph")."""
         return self._send("POST", "/basesnippets", json=payload)
 
+    def delete_post(self, post_id):
+        """DELETE basesnippets/<id>: SciLog marks the post deleted and moves it
+        into the logbook's history (it can be restored there)."""
+        return self._send("DELETE", f"/basesnippets/{_quote(post_id)}")
+
+    def file_snippet(self, file_id):
+        """GET filesnippet/<id>: an attachment's record (its ACLs among them)."""
+        return self.get(f"/filesnippet/{_quote(file_id)}")
+
+    def set_read_acl(self, kind, snippet_id, read_acl):
+        """PATCH only readACL ("basesnippets" or "filesnippet"): SciLog treats
+        that as sharing, allowed after a post's edit period too."""
+        if kind not in ("basesnippets", "filesnippet"):
+            raise ValueError(kind)
+        return self._send("PATCH", f"/{kind}/{_quote(snippet_id)}", json={"readACL": list(read_acl)})
+
     def update_post(self, post_id, payload):
         """PATCH basesnippets/<id>: change a post's textcontent, files, tags."""
         return self._send("PATCH", f"/basesnippets/{_quote(post_id)}", json=payload)
@@ -339,25 +358,39 @@ class Reader:
         name = re.search(r'filename="?([^";]+)', disposition)
         return r.content, r.headers.get("content-type", "application/octet-stream"), name.group(1) if name else None
 
-    def posts(self, logbook_id, updated_after=None, limit=100000):
+    #: what a comment or a reply's quote (children of a post) is read with
+    CHILD_FIELDS = {"id": True, "parentId": True, "linkType": True, "createdAt": True, "createdBy": True,
+                    "updatedAt": True, "textcontent": True, "files": True, "deleted": True, "expiresAt": True, "readACL": True}
+    CHILD_WHERE = {"snippetType": "paragraph", "linkType": {"inq": ["comment", "quote"]}}
+
+    def posts(self, logbook_id, updated_after=None, limit=100000, children=False):
         """Every post of a logbook as SciLog stores it (HTML, files, tags),
         oldest first; with updated_after (ISO) only those created or edited
-        since, deleted ones included so they can be removed."""
+        since, deleted ones included so they can be removed. With children,
+        each post comes with its comments and, for a reply, the copy of what
+        it quotes ("subsnippets", linkType "comment" / "quote")."""
         where = {"snippetType": "paragraph", "parentId": logbook_id}
         if updated_after:
             where["updatedAt"] = {"gt": updated_after}
         fields = dict(self.POST_FIELDS, updatedAt=True, updatedBy=True, updateACL=True, ownerGroup=True,
-                      accessGroups=True, isPrivate=True)
+                      accessGroups=True, isPrivate=True, defaultOrder=True, expiresAt=True, readACL=True, deleteACL=True)
+        extra = {"include": [{"relation": "subsnippets", "scope": {"where": self.CHILD_WHERE, "fields": self.CHILD_FIELDS}}]} if children else {}
         out, skip = [], 0
         while len(out) < limit:
             rows = self.get("/basesnippets", {
-                "where": where, "order": ["createdAt ASC"], "limit": PAGE, "skip": skip, "fields": fields,
+                "where": where, "order": ["createdAt ASC"], "limit": PAGE, "skip": skip, "fields": fields, **extra,
             })
             out += rows
             if len(rows) < PAGE:
                 break
             skip += PAGE
         return out[:limit]
+
+    def children_since(self, updated_after, limit=2000):
+        """Comments and reply quotes anywhere (that this token reads)
+        created or changed after updated_after (ISO), deleted ones included."""
+        return self.get("/basesnippets", {"where": {**self.CHILD_WHERE, "updatedAt": {"gt": updated_after}},
+                                          "order": ["updatedAt ASC"], "limit": limit, "fields": self.CHILD_FIELDS})
 
     def search(self, text, limit=20):
         """SciLog's own search over everything you can read, newest first.

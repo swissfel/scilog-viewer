@@ -16,6 +16,7 @@ import os
 import re
 import secrets
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -134,6 +135,10 @@ def apply_view_changes(raw, changes):
     return payload
 
 
+#: SciLog's role of every logged-in user: in a readACL, readable by everyone with a PSI account
+EVERYONE_LOGGED_IN = "any-authenticated-user"
+
+
 def _epoch(iso):
     try:
         return datetime.datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
@@ -175,6 +180,41 @@ class Store:
         for lb in rows:
             lb["url"] = f"{SCILOG_WEB}/logbooks/{lb['id']}/dashboard"
         return rows
+
+    # -- the token ------------------------------------------------------------------------
+
+    def token_status(self):
+        """{"ok", "identity", "personal", "expires" (epoch), "why", "can_set"}:
+        whether SciLog can be read, as whom, and until when."""
+        can_set = not logs_scilog._shared_account()
+        try:
+            r = self.reader
+        except logs_scilog.TokenError as exc:
+            why = "SciLog refused the token (expired?)" if "refused" in str(exc) else "There is no SciLog token here yet"
+            return {"ok": False, "why": why, "can_set": can_set}
+        exp = logs_scilog.claims(r.token).get("exp")
+        personal = not r.identity.startswith("the beamline account")
+        if personal and exp and exp < time.time():
+            return {"ok": False, "why": "the SciLog token has expired", "expires": exp, "can_set": can_set}
+        return {"ok": True, "identity": r.identity, "personal": personal, "expires": exp if personal else None, "can_set": can_set}
+
+    def set_token(self, value):
+        """Check a token with SciLog, keep it (mode 600) and read SciLog
+        with it from now on; returns the new token_status()."""
+        value = logs_scilog._clean(value)
+        if value.count(".") != 2:
+            raise ValueError("that is not a SciLog token (expected three dot-separated parts)")
+        exp = logs_scilog.claims(value).get("exp")
+        if exp and exp < time.time():
+            raise ValueError("this token has already expired: log in to SciLog again and copy the new one")
+        probe = logs_scilog.Reader(value, timeout=30)
+        probe.get("/logbooks", {"limit": 1, "fields": {"id": True}})  # TokenError if SciLog refuses it
+        logs_scilog.save_token(value)  # refuses a shared account
+        with self._lock:
+            self._reader = None
+            self._me = None
+            self.logbooks.clear()  # what may be read depends on whose token it is
+        return self.token_status()
 
     # -- who is reading, and may they write --------------------------------------
 
@@ -237,9 +277,24 @@ class Store:
         """What the page gets of one post."""
         text = logs_scilog.html_to_text(raw.get("textcontent") or "")
         created, updated = raw.get("createdAt") or "", raw.get("updatedAt") or ""
+        written = _epoch(created)
+        order = raw.get("defaultOrder")
+        at = order / 1e6 if isinstance(order, (int, float)) and order > 0 else written
+        expires = _epoch(raw.get("expiresAt") or "")
+        kids = [k for k in raw.get("subsnippets") or () if not k.get("deleted")]
+        quote = next((k for k in kids if k.get("linkType") == "quote"), None)
         return {
             "id": raw["id"],
-            "t": _epoch(created),
+            "t": at,  # where SciLog places it (defaultOrder): the creation time, unless it was inserted
+            "written": written,
+            "inserted": abs(at - written) > 600,
+            "order": order if isinstance(order, (int, float)) else None,
+            "expires": expires,
+            "comments": [self.child_record(k) for k in sorted((k for k in kids if k.get("linkType") == "comment"),
+                                                              key=lambda k: k.get("createdAt") or "")],
+            "quote": dict(self.child_record(quote), of=raw.get("_quote_of")) if quote else None,
+            "shared": EVERYONE_LOGGED_IN in (raw.get("readACL") or ()),
+            "can_delete": self._safe_may_delete(raw),
             "created": created,
             "updated": updated,
             "edited": bool(updated and created and _epoch(updated) - _epoch(created) > 60),
@@ -251,6 +306,75 @@ class Store:
             "title": _first_line(text),
             "can_edit": self._safe_may_edit(raw),
         }
+
+    def child_record(self, raw):
+        """A comment, or the copy of the post a reply quotes."""
+        text = logs_scilog.html_to_text(raw.get("textcontent") or "")
+        return {"id": raw["id"], "t": _epoch(raw.get("createdAt") or ""), "author": raw.get("createdBy") or "",
+                "html": content.clean_post(raw.get("textcontent") or "", raw.get("files")), "text": text}
+
+    @staticmethod
+    def _link_quotes(book, raws):
+        """A reply's quote is a copy without a link to what it copies: find
+        the original by its text, else by the copied expiry (SciLog's
+        default, creation + 3 days)."""
+        by_text = None
+        for raw in raws:
+            quote = next((k for k in raw.get("subsnippets") or () if k.get("linkType") == "quote" and not k.get("deleted")), None)
+            if not quote:
+                continue
+            if by_text is None:
+                by_text = {}
+                for r in book["raw"].values():
+                    by_text.setdefault((r.get("textcontent") or "").strip(), r["id"])
+            found = by_text.get((quote.get("textcontent") or "").strip())
+            if not found and quote.get("expiresAt"):
+                born = _epoch(quote["expiresAt"]) - 3 * 86400
+                found = next((r["id"] for r in book["raw"].values() if abs(_epoch(r.get("createdAt") or "") - born) < 2), None)
+            raw["_quote_of"] = found if found != raw["id"] else None
+
+    def _changed_by_children(self, book, since, already):
+        """Posts of this logbook whose comments (or quote) changed since
+        `since`: a comment does not touch its post's updatedAt."""
+        if not since or not hasattr(self.reader, "children_since"):
+            return []
+        out = {}
+        for kid in self.reader.children_since(since):
+            parent = book["raw"].get(kid.get("parentId"))
+            if parent is None:
+                continue
+            book["since"] = max(book["since"], kid.get("updatedAt") or "", kid.get("createdAt") or "")
+            kids = [k for k in parent.get("subsnippets") or () if k["id"] != kid["id"]]
+            parent["subsnippets"] = kids + [kid]
+            if parent["id"] not in already:
+                out[parent["id"]] = parent
+        return list(out.values())
+
+    def may_delete(self, raw):
+        """As SciLog decides: a member of one of the post's delete groups."""
+        me = self.me()
+        return me["writes"] and bool(me["roles"] & set(raw.get("deleteACL") or ()))
+
+    def _safe_may_delete(self, raw):
+        try:
+            return self.may_delete(raw)
+        except Exception:
+            return False
+
+    def delete(self, logbook_id, post_id):
+        """Delete a post in SciLog (it goes to the logbook's history, where
+        SciLog can restore it); returns {"removed": id}."""
+        raw = self._raw(logbook_id, post_id)
+        ok, why = self.may_write_to(logbook_id)
+        if not ok:
+            raise PermissionError(why)
+        if not self.may_delete(raw):
+            raise PermissionError("SciLog lets only the members of this post's delete groups delete it")
+        self.reader.delete_post(post_id)
+        book = self.logbooks[logbook_id]
+        book["raw"].pop(post_id, None)
+        book["posts"].pop(post_id, None)
+        return {"removed": post_id}
 
     def _safe_may_edit(self, raw):
         try:
@@ -266,12 +390,14 @@ class Store:
         with lock:
             book = self.logbooks.get(logbook_id)
             if book is None:
-                raw = self.reader.posts(logbook_id)
+                raw = self.reader.posts(logbook_id, children=True)
                 book = {"posts": {}, "raw": {}, "since": ""}
                 changed = raw
                 self.logbooks[logbook_id] = book
             else:
-                changed = self.reader.posts(logbook_id, updated_after=book["since"]) if book["since"] else []
+                old_since = book["since"]
+                changed = self.reader.posts(logbook_id, updated_after=old_since, children=True) if old_since else []
+                changed = list(changed) + self._changed_by_children(book, old_since, {r["id"] for r in changed})
             removed = []
             for r in changed:
                 book["since"] = max(book["since"], r.get("updatedAt") or "", r.get("createdAt") or "")
@@ -281,6 +407,10 @@ class Store:
                     removed.append(r["id"])
                 else:
                     book["raw"][r["id"]] = r
+                    book["posts"][r["id"]] = self.record(r)
+            self._link_quotes(book, [r for r in changed if not r.get("deleted")])
+            for r in changed:
+                if not r.get("deleted") and r["id"] in book["posts"]:
                     book["posts"][r["id"]] = self.record(r)
             if since is None:
                 posts = sorted(book["posts"].values(), key=lambda p: p["t"])
@@ -389,10 +519,38 @@ class Store:
         known = {f["fileId"]: f for f in (raw or {}).get("files") or () if f.get("fileId")}
         return {**self.uploads, **known}
 
-    def save(self, logbook_id, post_id, html, tags, expected_updated=None):
+    #: the longest edit period a new post may be given, in days
+    MAX_EDIT_DAYS = 3650
+
+    def _insert_order(self, logbook_id, after_id=None, before_id=None):
+        """A defaultOrder right after `after_id` (or right before
+        `before_id`) in SciLog's order: a post placed there after the fact."""
+        book = self.logbooks.get(logbook_id) or {}
+        orders = sorted(r.get("defaultOrder") for r in (book.get("raw") or {}).values()
+                        if isinstance(r.get("defaultOrder"), (int, float)))
+        anchor = (book.get("raw") or {}).get(after_id or before_id)
+        if anchor is None or not isinstance(anchor.get("defaultOrder"), (int, float)):
+            raise ValueError("the post to insert next to is not known")
+        if before_id:
+            b = anchor["defaultOrder"]
+            earlier = [o for o in orders if o < b]
+            a = earlier[-1] if earlier else b - 2_000_000  # before the very first post: a second earlier
+        else:
+            a = anchor["defaultOrder"]
+            later = [o for o in orders if o > a]
+            if not later:
+                return None  # the last post: a new post goes after it anyway
+            b = later[0]
+        if b - a < 2:
+            raise ValueError("there is no room between these two posts")
+        return int(a + (b - a) // 2)
+
+    def save(self, logbook_id, post_id, html, tags, expected_updated=None, edit_days=None, after=None, before=None):
         """Create (post_id None) or update a post from the editor's HTML;
         returns the post as the page shows it. With expected_updated, an
-        update is refused if the post was changed meanwhile."""
+        update is refused if the post was changed meanwhile. A new post can
+        be given an edit period (days; SciLog's own default is 3) and be
+        placed right after another post (`after`, a post id)."""
         raw = self._raw(logbook_id, post_id) if post_id else None
         self._check_write(logbook_id, raw)
         textcontent, files = content.to_scilog(html, self._known_files(raw))
@@ -402,6 +560,18 @@ class Store:
         if raw is None:
             payload = {"snippetType": "paragraph", "linkType": "paragraph", "parentId": logbook_id,
                        "textcontent": textcontent, "files": files, "tags": tags}
+            if edit_days is not None:
+                days = float(edit_days)
+                if not 0 < days <= self.MAX_EDIT_DAYS:
+                    raise ValueError(f"the edit period must be between 1 and {self.MAX_EDIT_DAYS} days")
+                until = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=days)
+                payload["expiresAt"] = until.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+            if after or before:
+                if not _ID.match(str(after or before)):
+                    raise ValueError("not a post id")
+                order = self._insert_order(logbook_id, after_id=after, before_id=before)
+                if order is not None:
+                    payload["defaultOrder"] = order
             new = self.reader.create_post(payload)
             post_id = new["id"]
         else:
@@ -420,6 +590,40 @@ class Store:
         book = self.logbooks.get(logbook_id)
         self.posts(logbook_id, book["since"] if book else None)
         return self.logbooks[logbook_id]["posts"][post_id]
+
+    def share(self, logbook_id, post_id, on=True):
+        """Make a post readable by everyone logged in to SciLog (any PSI
+        account), or no longer: its attachments, its comments and the post
+        itself, in that order, so the post is never visible with a broken
+        image. SciLog allows this to whoever may change the post, also after
+        its edit period."""
+        raw = self._raw(logbook_id, post_id)
+        self._check_write(logbook_id, raw)
+        current = self.reader.post(post_id)
+
+        def flip(acl):
+            acl = list(acl or ())
+            new = sorted(set(acl) | {EVERYONE_LOGGED_IN}) if on else [g for g in acl if g != EVERYONE_LOGGED_IN]
+            return new if set(new) != set(acl) else None
+
+        for f in {f.get("fileId") for f in current.get("files") or () if f.get("fileId")}:
+            new = flip(self.reader.file_snippet(f).get("readACL"))
+            if new is not None:
+                self.reader.set_read_acl("filesnippet", f, new)
+        for kid in raw.get("subsnippets") or ():
+            new = flip(kid.get("readACL"))
+            if new is not None:
+                self.reader.set_read_acl("basesnippets", kid["id"], new)
+                kid["readACL"] = new
+        new = flip(current.get("readACL"))
+        if new is not None:
+            self.reader.set_read_acl("basesnippets", post_id, new)
+            raw["readACL"] = new
+        elif current.get("readACL") is not None:
+            raw["readACL"] = list(current["readACL"])
+        record = self.record(raw)
+        self.logbooks[logbook_id]["posts"][post_id] = record
+        return record
 
     def set_heading(self, logbook_id, post_id, index, level):
         """Change one heading's level in place (from the outline)."""
@@ -467,8 +671,15 @@ class _Base(tornado.web.RequestHandler):
         given = self.get_query_argument("token", None) or self.get_cookie(COOKIE)
         return bool(given) and hmac.compare_digest(given, self.app.token)
 
+    def local_host(self):
+        """The page was asked for by a local name. A web site that points its
+        own domain at 127.0.0.1 (DNS rebinding) is turned away here: its
+        requests carry its own name in Host."""
+        host = self.request.host.rsplit(":", 1)[0] if not self.request.host.startswith("[") else self.request.host.split("]")[0] + "]"
+        return host in ("localhost", "127.0.0.1", "[::1]")
+
     def prepare(self):
-        if not self.authorized():
+        if not self.local_host() or not self.authorized():
             raise tornado.web.HTTPError(403)
 
     def set_default_headers(self):
@@ -485,7 +696,8 @@ class _Base(tornado.web.RequestHandler):
 
 class _Index(_Base):
     def prepare(self):
-        pass  # checks the token itself, to set the cookie
+        if not self.local_host():  # the token it checks itself, to set the cookie
+            raise tornado.web.HTTPError(403)
 
     def get(self):
         token = self.get_query_argument("token", None)
@@ -573,7 +785,8 @@ class _Upload(_Write):
 class _Save(_Write):
     async def post(self):
         b = self.body()
-        await self.run(self.app.store.save, b.get("logbook"), None, b.get("html", ""), b.get("tags"))
+        await self.run(self.app.store.save, b.get("logbook"), None, b.get("html", ""), b.get("tags"),
+                       None, b.get("edit_days"), b.get("after"), b.get("before"))
 
     async def patch(self, post_id):
         b = self.body()
@@ -584,6 +797,17 @@ class _Heading(_Write):
     async def post(self, post_id):
         b = self.body()
         await self.run(self.app.store.set_heading, b.get("logbook"), post_id, int(b.get("index", -1)), b.get("level", ""))
+
+
+class _Delete(_Write):
+    async def post(self, post_id):
+        await self.run(self.app.store.delete, self.body().get("logbook"), post_id)
+
+
+class _Share(_Write):
+    async def post(self, post_id):
+        b = self.body()
+        await self.run(self.app.store.share, b.get("logbook"), post_id, bool(b.get("on", True)))
 
 
 class _Views(_Base):
@@ -602,6 +826,18 @@ class _View(_Write):
             await self.run(self.app.store.remove_view, b.get("logbook"), view_id, b.get("version"))
         else:
             await self.run(self.app.store.change_view, b.get("logbook"), view_id, b.get("version"), b.get("changes"))
+
+
+class _Token(_Base):
+    async def get(self):
+        self.finish(await self.blocking(self.app.store.token_status))
+
+
+class _TokenSet(_Write):
+    """The token comes from the page: the same checks as for writes."""
+
+    async def post(self):
+        await self.run(self.app.store.set_token, str(self.body().get("token") or ""))
 
 
 class _WriteLogbook(_Write):
@@ -666,6 +902,8 @@ class ScilogApp:
                 (r"/", _Index),
                 (r"/static/(.*)", _Static, {"path": STATIC_DIR}),
                 (r"/api/me", _Me),
+                (r"/api/token", _Token),
+                (r"/api/token/set", _TokenSet),
                 (r"/api/logbooks", _Logbooks),
                 (r"/api/posts", _Posts),
                 (r"/api/edit/([0-9a-f]{24})", _Edit),
@@ -673,6 +911,8 @@ class ScilogApp:
                 (r"/api/save", _Save),
                 (r"/api/save/([0-9a-f]{24})", _Save),
                 (r"/api/heading/([0-9a-f]{24})", _Heading),
+                (r"/api/share/([0-9a-f]{24})", _Share),
+                (r"/api/delete/([0-9a-f]{24})", _Delete),
                 (r"/api/write-logbook", _WriteLogbook),
                 (r"/api/views", _Views),
                 (r"/api/view/([0-9a-f]{24})", _View),
