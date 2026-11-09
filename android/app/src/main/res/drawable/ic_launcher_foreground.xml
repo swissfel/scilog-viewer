@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- an open logbook: two pages with lines -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#FFFFFF" android:pathData="M30,36 L52,40 L52,74 L30,70 Z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M56,40 L78,36 L78,70 L56,74 Z" />
+    <path android:strokeColor="#1F5FBF" android:strokeWidth="2" android:pathData="M35,46 L47,48 M35,52 L47,54 M35,58 L47,60 M61,48 L73,46 M61,54 L73,52 M61,60 L73,58" />
+</vector>

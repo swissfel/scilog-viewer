@@ -1,5 +1,7 @@
-# The SciLog viewer as one program per system. Runs on demand and for tags
-# v*; a tag also makes a release with the programs attached.
+# The SciLog viewer as one program per system, and as an Android app. Runs on
+# demand and for tags v*; a tag also makes a release with all of them attached.
+# Android signing key: repository secrets SCILOG_KEYSTORE_B64 / SCILOG_KEYSTORE_PASSWORD
+# (otherwise debug-signed, and an update must then be installed after removing the old app).
 name: build
 on:
   workflow_dispatch:
@@ -46,9 +48,33 @@ jobs:
           mkdir out && cp "$src" "out/${{ matrix.name }}"
       - uses: actions/upload-artifact@v4
         with: { name: "${{ matrix.name }}", path: "out/${{ matrix.name }}" }
+  android:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "17" }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }  # Chaquopy builds with the same Python version as the app's
+      - name: Build the APK
+        working-directory: android
+        env:
+          SCILOG_KEYSTORE_B64: ${{ secrets.SCILOG_KEYSTORE_B64 }}
+          SCILOG_KEYSTORE_PASSWORD: ${{ secrets.SCILOG_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$SCILOG_KEYSTORE_B64" ]; then
+            echo "$SCILOG_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/scilog.jks"
+            export SCILOG_KEYSTORE="$RUNNER_TEMP/scilog.jks"
+          fi
+          chmod +x gradlew
+          ./gradlew :app:assembleRelease --console=plain
+          mkdir -p ../out && cp app/build/outputs/apk/release/app-release.apk ../out/scilog-viewer-android.apk
+      - uses: actions/upload-artifact@v4
+        with: { name: scilog-viewer-android.apk, path: out/scilog-viewer-android.apk }
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: program
+    needs: [program, android]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

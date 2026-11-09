@@ -60,7 +60,10 @@ The viewer is a small local server plus a web page; SciLog's API does not accept
 - **on the phone itself** (Android, untested so far): in [Termux](https://termux.dev),
   `pkg install python rust && pip install git+https://github.com/swissfel/scilog-dev && scilog-viewer --no-browser`,
   then open the printed address in the phone's browser;
-- an Android app wrapping the same server and page (a WebView) is possible; see "Where this could go".
+- **the Android app** (`scilog-viewer-android.apk`, from the releases or the build's artifacts): the same server
+  and page inside the app. Install the APK (Android asks once to allow installs from your browser or file manager),
+  open *SciLog viewer*, tap **Log in to SciLog here**: SciLog's own login (PSI account, MFA) opens in the app and
+  the token is taken over by itself. Links to other sites open in your browser; attachments go to Downloads.
 
 ## What it may do
 
@@ -85,13 +88,20 @@ from an eco checkout, leaving out what is eco-specific, until eco uses this pack
 
 ## Where this could go
 
-- **An Android app:** the same server and page packed with Python (BeeWare Briefcase / Chaquopy) and shown in a
-  WebView; built by the same workflow as the desktop programs, installed from the APK (not the Play Store).
 - **A purely static version** (e.g. on GitHub Pages, no local server) needs two things from SciLog: its API
   answering requests from another site (CORS for that site), and its login sending the browser back to that site
   with a token. Both are SciLog configuration, not code here.
 
 ## Building the programs
+
+**Android** (`android/`): a Kotlin app with [Chaquopy](https://chaquo.com/chaquopy/), which packs Python 3.12,
+tornado, requests and bleach with this repository's `scilog_viewer/`; `MainActivity` starts the server on
+127.0.0.1 and shows the page, `LoginActivity` is SciLog's login whose token it hands over. `cd android &&
+./gradlew :app:assembleRelease` (Android SDK 35, Java 17, Python 3.12 on the PATH). The build workflow signs it with
+the key in the repository secrets `SCILOG_KEYSTORE_B64` / `SCILOG_KEYSTORE_PASSWORD` (alias `scilog-viewer`), so that
+new versions install over old ones; without them it is debug-signed.
+
+**Desktop:**
 
 `pip install ".[build]" && sh packaging/build.sh` makes `dist/scilog-viewer` for the system it runs on;
 `packaging/smoke_test.py dist/scilog-viewer` starts it and checks that it serves the page. The `build` workflow does
