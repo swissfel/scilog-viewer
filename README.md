@@ -11,7 +11,10 @@ Read and write [SciLog](https://scilog.psi.ch), PSI's electronic logbook, in the
   drafts kept in the browser; a composer at the bottom, double-click your own post to edit it;
 - views of the flow (all, mine, by tag) and **SciLog's own views** (dashboard layouts) listed side by side,
   with what tells same-named ones apart, and renamed, changed or deleted (a local copy is kept first);
-- links to a single post, in context or alone.
+- links to a single post, in context or alone;
+- comments and replies as in SciLog, and a post's info;
+- the logbook's **tasks** in a pane: changed at any time and dragged into order, which is stored in SciLog (its own
+  page lists tasks by when they were added, until it sorts them too).
 
 ## Run it
 
