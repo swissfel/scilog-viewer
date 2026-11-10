@@ -170,7 +170,7 @@ REWRITES = [
     ('Path.home() / ".eco" / "scilog_app.json"', 'logs_scilog.CONFIG_DIR / "config.json"'),
     ("~/.eco/scilog_app.json", "~/.config/scilog-viewer/config.json"),
     ("from eco.ei_page import can_open_browser", "from scilog_viewer.client import can_open_browser"),
-    ("eco.start_scilog() printed", "python -m scilog_viewer printed"),
+    ("scilog.viewer() printed", "python -m scilog_viewer printed"),
     ('"eco scilog: ', '"scilog viewer: '),
     ("eco scilog server", "scilog viewer server"),
     ('"eco-scilog', '"scilog-viewer'),

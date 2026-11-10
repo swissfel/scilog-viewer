@@ -59,6 +59,11 @@ class MainActivity : Activity() {
                 try { startActivity(Intent(Intent.ACTION_VIEW, request.url)) } catch (e: Exception) { toast("No app opens ${request.url}") }
                 return true
             }
+
+            // the "Starting ..." page must not stay in the history: Back would end on it, white
+            override fun onPageFinished(view: WebView, url: String) {
+                if (url.startsWith("http://")) view.clearHistory()
+            }
         }
         web.webChromeClient = object : WebChromeClient() {
             override fun onShowFileChooser(view: WebView, callback: ValueCallback<Array<Uri>>, params: FileChooserParams): Boolean {
@@ -76,7 +81,16 @@ class MainActivity : Activity() {
         Thread {
             try {
                 val url = python().getModule("android_main").callAttr("start", filesDir.absolutePath).toString()
-                runOnUiThread { if (savedInstanceState == null || web.url == null || !web.url!!.startsWith("http://")) web.loadUrl(url) }
+                runOnUiThread {
+                    // after Android ended the app, the restored page points at the old server (another
+                    // port and key): open the new one, at the same place (the part after #)
+                    val old = web.url
+                    val same = old != null && Uri.parse(old).port == Uri.parse(url).port && old.startsWith("http://")
+                    if (!same) {
+                        val place = old?.takeIf { it.startsWith("http://") }?.let { Uri.parse(it).fragment }
+                        web.loadUrl(if (place.isNullOrEmpty()) url else "${url.substringBefore('#')}#$place")
+                    }
+                }
             } catch (e: Exception) {
                 runOnUiThread { web.loadData("<p style='font:16px sans-serif;padding:24px'>The viewer could not start: ${e.message}</p>", "text/html", "utf-8") }
             }
@@ -88,9 +102,15 @@ class MainActivity : Activity() {
         web.saveState(outState)
     }
 
-    @Deprecated("the WebView's history first")
+    // Back closes what the page has open on top (picture, menu, search, dialog, editor, ...), the
+    // topmost first; the page opens those without history entries. With nothing left open the app
+    // goes to the background, its server and place kept.
+    @Deprecated("the page decides first")
     override fun onBackPressed() {
-        if (web.canGoBack()) web.goBack() else @Suppress("DEPRECATION") super.onBackPressed()
+        if (web.url?.startsWith("http://") != true) { moveTaskToBack(true); return }
+        web.evaluateJavascript("(window.scilogBack && window.scilogBack()) ? 1 : 0") { result ->
+            if (result != "1") moveTaskToBack(true)
+        }
     }
 
     @Deprecated("startActivityForResult")
