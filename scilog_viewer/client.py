@@ -77,8 +77,19 @@ def _shared_account():
     return user if user in shared else None
 
 
-def reader(url=URL, session=None, timeout=30):
+#: no beamline (functional) account in this package: a token is always personal
+FUNCTIONAL_USER = ""
+
+
+def functional_available():
+    """There is no beamline account to read SciLog as here."""
+    return False
+
+
+def reader(url=URL, session=None, timeout=30, personal=True):
     """A Reader with your personal token."""
+    if not personal:
+        raise TokenError("there is no beamline account here: use your own token")
     if _shared_account():
         raise TokenError("this is a shared account: no personal token here")
     value, where = token()

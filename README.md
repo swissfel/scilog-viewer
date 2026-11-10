@@ -53,7 +53,9 @@ asks for it and says how to get it:
 The viewer checks it with SciLog and keeps it in `~/.config/scilog-viewer/token` (mode 600). **A token lasts 14 days
 from the login and cannot be renewed**; three days before, a badge in the bar says so. `python -m scilog_viewer --token`
 and `$SCILOG_TOKEN` work too, and eco's `~/.eco/scilog_token` is used if present. Never keep a personal token on an
-account several people use.
+account several people use: there (listed in `$SCILOG_VIEWER_SHARED_ACCOUNTS`) the viewer only *borrows* a
+token, held in memory for at most 8 hours and never written to disk. Anywhere, the token window's "Keep it" box
+decides between keeping a token and borrowing it.
 
 ### From a phone
 
