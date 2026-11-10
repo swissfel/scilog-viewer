@@ -17,7 +17,7 @@ android {
         targetSdk = 35
         // every CI build counts up, so a phone takes it as an update of the one before
         versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
-        versionName = System.getenv("GITHUB_REF_NAME")?.takeIf { it.startsWith("v") }?.removePrefix("v") ?: "0.2.2"
+        versionName = System.getenv("GITHUB_REF_NAME")?.takeIf { it.startsWith("v") }?.removePrefix("v") ?: "0.2.3"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }
 
