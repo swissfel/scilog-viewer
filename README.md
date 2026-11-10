@@ -22,7 +22,9 @@ Read and write [SciLog](https://scilog.psi.ch), PSI's electronic logbook, in the
 |---|---|
 | Linux (x86-64) | `scilog-viewer-linux-x86_64` (make it executable: `chmod +x`) |
 | Windows | `scilog-viewer-windows-x86_64.exe` |
-| macOS (Apple silicon / Intel) | `scilog-viewer-macos-arm64` / `-x86_64` (unsigned: right-click, Open, the first time) |
+| Android | `scilog-viewer-android.apk` (see [From a phone](#from-a-phone)) |
+
+No macOS program for now (GitHub runs no macOS builds for this repository); on a Mac use `pip install` below.
 
 It opens the viewer in your browser and runs until its window is closed.
 
@@ -60,8 +62,9 @@ The viewer is a small local server plus a web page; SciLog's API does not accept
 - **on the phone itself** (Android, untested so far): in [Termux](https://termux.dev),
   `pkg install python rust && pip install git+https://github.com/swissfel/scilog-dev && scilog-viewer --no-browser`,
   then open the printed address in the phone's browser;
-- **the Android app** (`scilog-viewer-android.apk`, from the releases or the build's artifacts): the same server
-  and page inside the app. Install the APK (Android asks once to allow installs from your browser or file manager),
+- **the Android app**: on the phone, sign in to github.com in the browser (the repository is private), open this
+  repository's **Releases**, tap `scilog-viewer-android.apk` and open the download. The same server and page
+  inside the app; newer releases install over it. Install the APK (Android asks once to allow installs from your browser or file manager),
   open *SciLog viewer*, tap **Log in to SciLog here**: SciLog's own login (PSI account, MFA) opens in the app and
   the token is taken over by itself. Links to other sites open in your browser; attachments go to Downloads.
 
@@ -105,4 +108,4 @@ new versions install over old ones; without them it is debug-signed.
 
 `pip install ".[build]" && sh packaging/build.sh` makes `dist/scilog-viewer` for the system it runs on;
 `packaging/smoke_test.py dist/scilog-viewer` starts it and checks that it serves the page. The `build` workflow does
-both on Linux, Windows and macOS (on demand, and for tags `v*`, which also publish a release).
+both on Linux and Windows (macOS when GitHub provides runners again) (on demand, and for tags `v*`, which also publish a release).

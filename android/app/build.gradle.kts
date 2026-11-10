@@ -15,8 +15,9 @@ android {
         applicationId = "ch.psi.scilogviewer"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.2.0"
+        // every CI build counts up, so a phone takes it as an update of the one before
+        versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
+        versionName = System.getenv("GITHUB_REF_NAME")?.takeIf { it.startsWith("v") }?.removePrefix("v") ?: "0.2.0"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }
 
