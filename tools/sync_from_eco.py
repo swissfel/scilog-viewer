@@ -182,6 +182,8 @@ REWRITES = [
     ("~/.eco/scilog_app.json", "~/.config/scilog-viewer/config.json"),
     ("from eco.ei_page import can_open_browser", "from scilog_viewer.client import can_open_browser"),
     ("scilog.viewer() printed", "python -m scilog_viewer printed"),
+    ("(<code>scilog.viewer()</code> prints it \"\n            \"again; it may be on another port than before)",
+     "(the program prints it when it starts; \"\n            \"it may be on another port than before)"),
     ('"eco scilog: ', '"scilog viewer: '),
     ("eco scilog server", "scilog viewer server"),
     ('"eco-scilog', '"scilog-viewer'),
