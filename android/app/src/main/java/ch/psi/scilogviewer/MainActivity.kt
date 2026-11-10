@@ -109,8 +109,17 @@ class MainActivity : Activity() {
     override fun onBackPressed() {
         if (web.url?.startsWith("http://") != true) { moveTaskToBack(true); return }
         web.evaluateJavascript("(window.scilogBack && window.scilogBack()) ? 1 : 0") { result ->
-            if (result != "1") moveTaskToBack(true)
+            if (result != "1") askToLeave()
         }
+    }
+
+    // nothing left to close: leave only when asked to (the app keeps running in the background)
+    private fun askToLeave() {
+        android.app.AlertDialog.Builder(this)
+            .setMessage("Leave the SciLog viewer?")
+            .setPositiveButton("Leave") { _, _ -> moveTaskToBack(true) }
+            .setNegativeButton("Stay", null)
+            .show()
     }
 
     @Deprecated("startActivityForResult")
