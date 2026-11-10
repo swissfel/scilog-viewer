@@ -57,6 +57,9 @@ val copyViewer by tasks.registering(Copy::class) {
     into(viewerPython.map { it.dir("scilog_viewer") })
 }
 tasks.named("preBuild") { dependsOn(copyViewer) }
+// Chaquopy's own tasks do not run after preBuild, so they need the copy declared themselves.
+tasks.matching { it.name.startsWith("merge") && it.name.endsWith("PythonSources") }
+    .configureEach { dependsOn(copyViewer) }
 
 chaquopy {
     defaultConfig {
