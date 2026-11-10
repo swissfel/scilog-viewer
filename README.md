@@ -6,7 +6,8 @@ Read and write [SciLog](https://scilog.psi.ch), PSI's electronic logbook, in the
 - a left pane with either the **outline** (months, days, posts, headings) or the **map**: the flow drawn
   small, with figures, tables, lists and code recognisable by their look; a click jumps there;
 - fuzzy search (typos allowed) with previews;
-- interactive HTML plots inline, images in a lightbox;
+- interactive HTML plots inline, images on their own on a tap or a click, there pinch- (or wheel-) zoomable,
+  dragged about and zoomed in and out again by a double tap: on a phone a figure can be read, not only seen;
 - writing and editing posts with the editor SciLog itself uses (CKEditor 5), images uploaded as they are pasted,
   drafts kept in the browser; a composer at the bottom, double-click your own post to edit it;
 - views of the flow (all, mine, by tag) and **SciLog's own views** (dashboard layouts) listed side by side,
@@ -72,6 +73,7 @@ The viewer is a small local server plus a web page; SciLog's API does not accept
   inside the app; newer releases install over it. Install the APK (Android asks once to allow installs from your browser or file manager),
   open *SciLog viewer*, tap **Log in to SciLog here**: SciLog's own login (PSI account, MFA) opens in the app and
   the token is taken over by itself. Links to other sites open in your browser; attachments go to Downloads.
+  A picture opened from a post zooms with a pinch; Back closes it.
 
 ## What it may do
 

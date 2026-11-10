@@ -291,8 +291,96 @@ function runPlot(span, id) {
   span.append(frame);
 }
 
+// A picture on its own, as large as it can be and zoomable: pinch it (or turn the wheel) to
+// zoom, drag it to move, double-tap it to zoom in and back. A tap beside the picture closes it,
+// as does a tap on it while it is not zoomed, the × , Escape and the phone's Back button.
 function lightbox(src) {
-  const box = el("div", { id: "lightbox", onclick: () => box.remove() }, el("img", { src }));
+  const MAX = 8;                                  // at most eight times its fitted size
+  const img = el("img", { src, alt: "", draggable: "false" });
+  const shut = el("button", { id: "lightbox-close", title: "Close", "aria-label": "Close the picture",
+                              onclick: () => box.remove() }, "✕");
+  const box = el("div", { id: "lightbox" }, img, shut);
+  const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+
+  let scale = 1, tx = 0, ty = 0;                  // the picture's middle, moved from the box's middle
+  const fingers = new Map();                      // what is touching it (or the mouse), from the middle
+  let from = null;                                // what the gesture started at
+  let moved = false, onPicture = false, tapped = 0, tapTimer = 0;
+
+  // a point on the screen, measured from the middle of the box
+  const at = (x, y) => { const r = box.getBoundingClientRect(); return { x: x - r.left - r.width / 2, y: y - r.top - r.height / 2 }; };
+  // where the fingers are, together: their middle and how far apart they are
+  const hold = () => {
+    const ps = [...fingers.values()];
+    const n = ps.length || 1;
+    return { x: ps.reduce((s, p) => s + p.x, 0) / n, y: ps.reduce((s, p) => s + p.y, 0) / n,
+             d: ps.length > 1 ? Math.hypot(ps[0].x - ps[1].x, ps[0].y - ps[1].y) : 0 };
+  };
+  const begin = () => { from = { ...hold(), scale, tx, ty }; };
+
+  const draw = () => {
+    // the picture is never dragged off the screen; smaller than the box, it stays in the middle
+    const room = (size, outer) => Math.max(0, (size * scale - outer) / 2);
+    tx = clamp(tx, -room(img.offsetWidth, box.clientWidth), room(img.offsetWidth, box.clientWidth));
+    ty = clamp(ty, -room(img.offsetHeight, box.clientHeight), room(img.offsetHeight, box.clientHeight));
+    img.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+    box.classList.toggle("zoomed", scale > 1.01);
+  };
+  // zoom to s, keeping whatever is under (fx, fy) where it is
+  const zoomTo = (s, fx, fy) => {
+    s = clamp(s, 1, MAX);
+    const r = s / scale;
+    tx = fx - r * (fx - tx);
+    ty = fy - r * (fy - ty);
+    scale = s;
+    draw();
+  };
+
+  box.addEventListener("pointerdown", (e) => {
+    if (e.target === shut) return;
+    e.preventDefault();
+    if (!fingers.size) { moved = false; onPicture = e.target === img; }
+    box.setPointerCapture(e.pointerId);   // from here on the events say "box", hence onPicture above
+    fingers.set(e.pointerId, at(e.clientX, e.clientY));
+    begin();
+  });
+  box.addEventListener("pointermove", (e) => {
+    if (!fingers.has(e.pointerId) || !from) return;
+    fingers.set(e.pointerId, at(e.clientX, e.clientY));
+    const now = hold();
+    let s = from.scale;
+    if (from.d > 20 && now.d > 20) s = clamp(from.scale * now.d / from.d, 1, MAX);   // two fingers: zoom
+    if (Math.hypot(now.x - from.x, now.y - from.y) > 8 || Math.abs(s - from.scale) > .01) moved = true;
+    const r = s / from.scale;
+    scale = s;
+    tx = now.x - r * (from.x - from.tx);        // the fingers keep hold of the same spot
+    ty = now.y - r * (from.y - from.ty);
+    draw();
+  });
+  const lift = (e) => {
+    if (!fingers.delete(e.pointerId)) return;
+    if (fingers.size) { begin(); return; }       // one finger left: carry on from where it is
+    from = null;
+    if (moved) return;                           // that was a drag or a pinch, not a tap
+    if (!onPicture || e.pointerType !== "touch") { box.remove(); return; }
+    const when = Date.now(), spot = at(e.clientX, e.clientY);
+    if (when - tapped < 300) {                   // twice: in to the picture's own size, or back out
+      clearTimeout(tapTimer);
+      tapped = 0;
+      zoomTo(scale > 1.01 ? 1 : clamp(img.naturalWidth / (img.offsetWidth || 1) || 2.5, 2, MAX), spot.x, spot.y);
+      return;
+    }
+    tapped = when;
+    if (scale > 1.01) return;                    // zoomed in, one tap does nothing (a second zooms out)
+    tapTimer = setTimeout(() => box.remove(), 300);
+  };
+  box.addEventListener("pointerup", lift);
+  box.addEventListener("pointercancel", lift);
+  box.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const spot = at(e.clientX, e.clientY);
+    zoomTo(scale * Math.exp(-e.deltaY / 400), spot.x, spot.y);
+  }, { passive: false });
   document.body.append(box);
 }
 

@@ -107,8 +107,14 @@ body.no-outline #outline { display: none; }
 #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--fg); color: var(--bg);
          padding: 6px 14px; border-radius: 6px; font-size: .9em; z-index: 40; }
 #lightbox { position: fixed; inset: 0; background: rgba(0, 0, 0, .85); display: flex; align-items: center; justify-content: center;
-            z-index: 50; cursor: zoom-out; }
-#lightbox img { max-width: 96vw; max-height: 96vh; }
+            z-index: 50; cursor: zoom-out; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; }
+/* the picture is moved and zoomed by hand (pinch, drag, wheel), so the browser must keep its fingers off it */
+#lightbox img { max-width: 96vw; max-height: 96vh; transform-origin: center center; will-change: transform;
+                -webkit-user-drag: none; -webkit-touch-callout: none; }
+#lightbox.zoomed { cursor: grab; }
+#lightbox-close { position: absolute; top: 10px; right: 10px; z-index: 1; width: 40px; height: 40px; padding: 0;
+                  border: 0; border-radius: 50%; background: rgba(0, 0, 0, .55); color: #fff; font-size: 18px; line-height: 1; }
+#lightbox-close:hover { background: rgba(0, 0, 0, .8); }
 
 @media (max-width: 760px) {
   #outline { position: fixed; inset: 48px auto 0 0; background: var(--bg); z-index: 15; box-shadow: 4px 0 16px var(--shadow); }
