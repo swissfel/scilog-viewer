@@ -4,8 +4,14 @@
 
 const $ = (sel) => document.querySelector(sel);
 const state = { logbooks: [], logbook: null, posts: [], all: [], byId: new Map(), since: null, poll: null, results: [], active: -1,
-                me: {}, view: "all", only: null };
+                me: {}, view: "all", only: null,
+                from: null,        // the oldest post read so far: where the next piece carries on
+                whole: true,       // is the logbook read down to its first post?
+                reading: false };  // ... and if not, is the rest still coming?
 const POLL_MS = 20000;
+// A logbook is read from its end: this many posts first, so that the last day is on the screen
+// at once, then older pieces, each twice the one before (fewer requests the further back it goes).
+const FIRST = 50, MORE = 200, MOST = 2000;
 
 // -- helpers -------------------------------------------------------------------------
 
@@ -201,13 +207,16 @@ function setThumbs(on) {
 
 // -- views: which posts are shown ---------------------------------------------------------
 
+function viewFilter() {
+  const v = state.view, only = state.only, me = state.me.email;
+  return (p) => only ? p.id === only
+    : v === "mine" ? p.author === me
+    : v.startsWith("tag:") ? p.tags.includes(v.slice(4))
+    : true;
+}
+
 function applyView() {
-  const v = state.view;
-  state.posts = state.all.filter((p) =>
-    state.only ? p.id === state.only
-      : v === "mine" ? p.author === state.me.email
-      : v.startsWith("tag:") ? p.tags.includes(v.slice(4))
-      : true);
+  state.posts = state.all.filter(viewFilter());
 }
 
 function fillViews() {
@@ -270,7 +279,10 @@ function renderFlow() {
     frag.append(postElement(p));
   }
   flow.replaceChildren(flowTools(), frag);
-  if (!state.posts.length) flow.append(el("p", { class: "hint", text: "This logbook has no posts yet." }));
+  if (!state.posts.length) flow.append(el("p", { class: "hint",
+    text: state.reading ? "Reading the logbook; what you asked for is not among the newest posts, it is still being looked for …"
+                        : "This logbook has no posts yet." }));
+  olderNote(state.reading);
   if (!state.only) flow.append(composerElement());
   observePosts();
 }
@@ -737,12 +749,16 @@ async function openLogbook(id, postId, only = false) {
   const link = $("#scilog-link");
   link.href = lb.url || `https://scilog.psi.ch/logbooks/${id}/dashboard`;
   link.hidden = false;
-  $("#flow").replaceChildren(el("p", { class: "hint", text: "Reading the logbook from SciLog ..." }));
+  $("#flow").replaceChildren(el("p", { class: "hint", text: "Reading the newest posts from SciLog ..." }));
   clearInterval(state.poll);
   try {
-    const data = await api(`/api/posts?logbook=${id}`);
+    // the end of the logbook first; the rest follows below, while it is being read
+    const data = await api(`/api/posts?logbook=${id}&newest=${FIRST}`);
     state.all = data.posts;
     state.since = data.since;
+    state.from = data.from;
+    state.whole = data.whole !== false;
+    state.reading = !state.whole;
   } catch (e) {
     $("#flow").replaceChildren(el("p", { class: "hint", text: `SciLog could not be read: ${e.message}` }));
     return;
@@ -752,7 +768,10 @@ async function openLogbook(id, postId, only = false) {
   state.only = only && postId ? postId : null;
   fillViews();
   applyView();
-  if (postId && !state.posts.some((p) => p.id === postId)) { state.view = "all"; $("#view").value = "all"; applyView(); }
+  // a post asked for that is held but hidden by the view: show all posts (one not read yet waits)
+  if (postId && state.byId.has(postId) && !state.posts.some((p) => p.id === postId)) {
+    state.view = "all"; $("#view").value = "all"; applyView();
+  }
   prepareSearch();
   renderFlow();
   renderOutline();
@@ -767,6 +786,99 @@ async function openLogbook(id, postId, only = false) {
   else holdBottom();
   if (!state.only) history.replaceState(null, "", `#lb=${id}${postId ? `&post=${postId}` : ""}`);
   state.poll = setInterval(refresh, POLL_MS);
+  if (state.reading) readTheRest(id, postId);
+}
+
+// The rest of a long logbook, read backwards from where the newest posts ended and put in
+// above them: the last day is readable from the first moment, the older days appear as they
+// come, and nothing moves under the eye. Each piece is twice the one before, so a logbook of
+// any length is in after a handful of requests. Another logbook opened meanwhile ends this.
+async function readTheRest(id, wanted) {
+  let n = MORE;
+  while (!state.whole && state.logbook?.id === id) {
+    let piece;
+    try {
+      piece = await api(`/api/posts?logbook=${id}&newest=${n}&before=${encodeURIComponent(state.from || "")}`);
+    } catch (e) {
+      if (state.logbook?.id !== id) return;
+      state.reading = false;
+      olderNote(false);
+      setStatus(`the older posts stopped coming: ${e.message}`);
+      return;
+    }
+    if (state.logbook?.id !== id) return;   // another logbook was opened while this was read
+    const older = piece.posts.filter((p) => !state.byId.has(p.id));
+    for (const p of older) state.byId.set(p.id, p);
+    state.from = piece.from || state.from;
+    state.whole = piece.whole !== false;
+    state.reading = !state.whole;
+    state.all = [...state.byId.values()].sort((a, b) => a.t - b.t);
+    showOlder(older);
+    if (wanted && state.byId.has(wanted)) { reachPost(wanted); wanted = null; }
+    n = Math.min(n * 2, MOST);
+  }
+  state.reading = false;
+  olderNote(false);
+  prepareSearch();   // the whole logbook can be searched now, not only its end
+  fillViews();
+  setStatus();
+  if (wanted && !state.byId.has(wanted)) toast("That post is not in this logbook (any more).");
+}
+
+// A piece of older posts into the flow, above what is shown, without moving the reading place.
+function showOlder(older) {
+  const anchor = readingAnchor();
+  applyView();
+  fillViews();   // the counts and the tags of a view grow with every piece
+  prependFlow(older.filter(viewFilter()));
+  keepReading(anchor);
+  laterOutline();
+  observePosts();
+  updateToBottom();
+  olderNote(state.reading);
+  setStatus();
+}
+
+// The post a link asked for, once it has been read.
+function reachPost(id) {
+  if (state.only) { showOnly(id); return; }
+  if (!state.posts.some((p) => p.id === id)) { state.view = "all"; $("#view").value = "all"; applyView(); renderFlow(); }
+  jumpToPost(id);
+}
+
+// Older posts above the ones already drawn (they are older than all of them, so they go on top).
+function prependFlow(list) {
+  if (!list.length) return;
+  const flow = $("#flow");
+  const frag = document.createDocumentFragment();
+  let day = null;
+  for (const p of list) {
+    const k = dayKey(p.t);
+    if (k !== day) { frag.append(dayElement(p.t)); day = k; }
+    frag.append(postElement(p));
+  }
+  flow.querySelector(".hint:not(#reading-older)")?.remove();
+  let first = flow.querySelector(".day, .post");
+  // the day these older posts end on already has its header below: the piece brings its own
+  if (first?.classList.contains("day") && first.dataset.day === day) {
+    const next = first.nextElementSibling;
+    first.remove();
+    first = next;
+  }
+  if (first) first.before(frag);
+  else {
+    const last = document.getElementById("composer") || flow.lastElementChild;
+    if (last) last.before(frag); else flow.append(frag);
+  }
+}
+
+// At the top of the flow while the older posts are still coming, so that an empty space above
+// the first day is never mistaken for the beginning of the logbook.
+function olderNote(on) {
+  const flow = $("#flow");
+  const note = document.getElementById("reading-older");
+  if (!on) { note?.remove(); return; }
+  if (!note) $("#flow-tools")?.after(el("p", { id: "reading-older", class: "hint", text: "Reading the older posts …" }));
 }
 
 // -- to the newest post ------------------------------------------------------------------------
@@ -1084,7 +1196,8 @@ function headingMenu(ev, postId, index, level) {
 function setStatus(extra) {
   const now = new Date();
   const shown = state.posts.length === state.all.length ? `${state.all.length} posts` : `${state.posts.length} of ${state.all.length} posts`;
-  $("#status").textContent = extra || `${shown} · ${state.identity || ""}${canWrite() ? " · can write" : ""} · ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+  const coming = state.reading ? " · older ones still coming" : "";
+  $("#status").textContent = extra || `${shown}${coming} · ${state.identity || ""}${canWrite() ? " · can write" : ""} · ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
   updateTokenBadge();
 }
 

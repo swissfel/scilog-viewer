@@ -60,6 +60,7 @@ class _FakeReader:
         self.rows = [self.row("p1", "2026-11-01T10:00:00Z", "<h2>First</h2><p>alpha</p>"),
                      self.row("p2", "2026-11-02T10:00:00Z", "<p>beta</p>")]
         self.requests = []
+        self.pieces = []   # (how many, before) of every piece read from the end
 
     @staticmethod
     def row(i, t, html, updated=None, deleted=False):
@@ -69,6 +70,13 @@ class _FakeReader:
     def posts(self, logbook, updated_after=None, children=False):
         self.requests.append(updated_after)
         return [r for r in self.rows if not updated_after or r["updatedAt"] > updated_after]
+
+    def newest_posts(self, logbook, n, before=None, children=False):
+        self.pieces.append((n, before))
+        rows = sorted(self.rows, key=lambda r: r["createdAt"])
+        if before:
+            rows = [r for r in rows if r["createdAt"] <= before]
+        return rows[-n:]
 
     def logbooks(self):
         return [{"id": LB, "name": "Test log", "pgroup": "p1", "location": "x", "private": False, "touched": ""}]
@@ -96,6 +104,67 @@ def test_the_store_reads_a_logbook_once_then_only_what_changed(tmp_path):
     assert reader.requests[-1] == "2026-11-02T10:00:00Z"
     data, ctype, _ = store.image("a" * 24)
     assert data == b"\x89PNG" and oct((tmp_path / "files").stat().st_mode & 0o777) == "0o700"
+
+
+def test_a_long_logbook_is_read_from_its_end_a_piece_at_a_time(tmp_path):
+    reader = _FakeReader()
+    reader.rows = [reader.row(f"p{i:02d}", f"2026-11-{i:02d}T10:00:00Z", f"<p>{i}</p>") for i in range(1, 11)]
+    store = Store(reader, cache_dir=tmp_path / "files")
+
+    last = store.posts(LB, newest=3)
+    assert [p["id"] for p in last["posts"]] == ["p08", "p09", "p10"]
+    assert last["whole"] is False and last["from"] == "2026-11-08T10:00:00Z"
+
+    older = store.posts(LB, newest=4, before=last["from"])
+    # "before" is read as "no later than", so the post it names comes again (two posts can
+    # carry the same instant); the page knows it already and puts only the new ones in
+    assert [p["id"] for p in older["posts"]] == ["p05", "p06", "p07", "p08"]
+    assert older["whole"] is False and older["from"] == "2026-11-05T10:00:00Z"
+
+    rest = store.posts(LB, newest=8, before=older["from"])
+    assert [p["id"] for p in rest["posts"]] == ["p01", "p02", "p03", "p04", "p05"]
+    assert rest["whole"] is True   # shorter than asked for: that was the logbook's beginning
+    assert reader.pieces == [(3, None), (4, "2026-11-08T10:00:00Z"), (8, "2026-11-05T10:00:00Z")]
+    assert reader.requests == []   # the logbook was never read whole in one go
+
+    # held whole now: a piece asked for returns everything, and says so
+    again = store.posts(LB, newest=3)
+    assert [p["id"] for p in again["posts"]] == [f"p{i:02d}" for i in range(1, 11)] and again["whole"]
+
+    # ... and what changed is still found from the newest post read, piecewise or not
+    reader.rows.append(reader.row("p11", "2026-11-11T10:00:00Z", "<p>new</p>"))
+    assert [p["id"] for p in store.posts(LB, again["since"])["posts"]] == ["p11"]
+
+
+def test_posts_written_in_the_same_instant_do_not_stop_the_reading(tmp_path):
+    """A piece ends on one of several posts carrying the same instant: asking again for
+    "no later than" that instant would bring the same posts back for ever."""
+    reader = _FakeReader()
+    reader.rows = ([reader.row("old", "2026-11-01T10:00:00Z", "<p>older still</p>")]
+                   + [reader.row(f"same{i}", "2026-11-02T10:00:00Z", f"<p>{i}</p>") for i in range(4)])
+    store = Store(reader, cache_dir=tmp_path / "files")
+    first = store.posts(LB, newest=2)
+    assert [p["id"] for p in first["posts"]] == ["same2", "same3"] and not first["whole"]
+    # the next piece ends on that same instant and holds nothing new, so a wider one is asked
+    # for at once: skipping the instant would leave same0 and same1 out of the logbook for good
+    second = store.posts(LB, newest=2, before=first["from"])
+    assert [p["id"] for p in second["posts"]] == ["old", "same0", "same1", "same2", "same3"]
+    assert second["whole"]   # a piece holds what was read for it, the two already shown included
+    assert reader.pieces == [(2, None), (2, "2026-11-02T10:00:00Z"), (8, "2026-11-02T10:00:00Z")]
+
+
+def test_a_piece_of_a_logbook_over_http(server):
+    base = f"http://localhost:{server.port}"
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+    opener.open(f"{base}/?token=sesame")
+    piece = json.load(opener.open(f"{base}/api/posts?logbook={LB}&newest=1"))
+    assert [p["id"] for p in piece["posts"]] == ["p2"] and piece["whole"] is False
+    rest = json.load(opener.open(f"{base}/api/posts?logbook={LB}&newest=1&before={piece['from']}"))
+    assert [p["id"] for p in rest["posts"]] == ["p1", "p2"]   # p2 again: the page has it and skips it
+    assert rest["whole"] is True
+    with pytest.raises(urllib.error.HTTPError) as err:
+        opener.open(f"{base}/api/posts?logbook={LB}&newest=1&before=yesterday")
+    assert err.value.code == 400
 
 
 @pytest.fixture

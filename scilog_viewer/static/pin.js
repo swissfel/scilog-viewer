@@ -88,7 +88,9 @@ async function restorePin() {
   const lb = state.logbooks.find((x) => x.id === saved.logbook);
   if (!lb) return;
   try {
-    const posts = state.logbook?.id === lb.id && state.all.length ? state.all : (await api(`/api/posts?logbook=${lb.id}`)).posts;
+    // the open logbook, but only once it is read whole: a pinned post may be an old one
+    const posts = state.logbook?.id === lb.id && state.whole && state.all.length
+      ? state.all : (await api(`/api/posts?logbook=${lb.id}`)).posts;
     if (posts.some((p) => p.id === saved.post)) showPin(lb, posts, saved.post);
   } catch (e) { /* the pin just does not come back */ }
 }

@@ -35,6 +35,8 @@ STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 COOKIE = "scilog_viewer_token"
 DEFAULT_PORT = 8798
 SCILOG_WEB = "https://scilog.psi.ch"
+#: a time as SciLog writes it (ISO 8601), as far as a where clause needs to trust it
+_ISO = re.compile(r"^\d{4}-\d{2}-\d{2}[T ][\d:.]{5,15}(Z|[+-]\d{2}:?\d{2})?$")
 _ID = re.compile(r"^[0-9a-f]{24}$")
 #: which logbooks may be written to: ~/.config/scilog-viewer/config.json {"write_logbooks": [ids] or "all"}
 CONFIG_PATH = logs_scilog.CONFIG_DIR / "config.json"
@@ -153,6 +155,11 @@ def _first_line(text):
         if line.strip():
             return line.strip()[:120]
     return ""
+
+
+def _in_order(post):
+    """Posts as the page shows them: oldest first, and by id where the instant is the same."""
+    return (post["t"], post["id"])
 
 
 class Store:
@@ -471,18 +478,39 @@ class Store:
         except Exception:
             return False
 
-    def posts(self, logbook_id, since=None):
-        """{"posts": [...], "removed": [ids], "since": iso}: everything the
-        first time (since=None), afterwards what changed after `since`."""
+    def posts(self, logbook_id, since=None, newest=None, before=None):
+        """{"posts": [...], "removed": [ids], "since": iso, "from": iso, "whole": bool}:
+        everything the first time (since=None), afterwards what changed after `since`.
+
+        With `newest` only that many posts are read, the newest ones -- or the newest
+        written no later than `before`, which is the "from" of the piece before it. A long
+        logbook is read from its end this way, a piece at a time, so that its last day can
+        be shown while the rest is still coming. "from" is the oldest post held, where the
+        next piece carries on; "whole" says whether the logbook's beginning has been
+        reached, which it has as soon as a piece comes back shorter than it was asked for.
+        A logbook already held whole is returned whole, `newest` or not."""
         with self._lock:
             lock = self._locks.setdefault(logbook_id, threading.Lock())
         with lock:
             book = self.logbooks.get(logbook_id)
+            piece = bool(newest) and not (book and book["whole"])
             if book is None:
-                raw = self.reader.posts(logbook_id, children=True)
-                book = {"posts": {}, "raw": {}, "since": ""}
-                changed = raw
+                book = {"posts": {}, "raw": {}, "since": "", "from": "", "whole": not piece}
                 self.logbooks[logbook_id] = book
+                changed = (self.reader.newest_posts(logbook_id, newest, before=before or None, children=True)
+                           if piece else self.reader.posts(logbook_id, children=True))
+            elif piece:
+                bound = before or book["from"] or None
+                asked = newest
+                changed = self.reader.newest_posts(logbook_id, asked, before=bound, children=True)
+                # Nothing in the piece that is not held already: more posts carry the instant it
+                # ends on than fit in it. Ask for more at once -- stepping past that instant
+                # instead would leave the posts sharing it out of the logbook for good.
+                while bound and len(changed) == asked and not [r for r in changed if r["id"] not in book["raw"]]:
+                    asked *= 4
+                    changed = self.reader.newest_posts(logbook_id, asked, before=bound, children=True)
+                # shorter than it was asked for: that was the logbook's beginning
+                book["whole"] = len(changed) < asked
             else:
                 old_since = book["since"]
                 changed = self.reader.posts(logbook_id, updated_after=old_since, children=True) if old_since else []
@@ -501,12 +529,18 @@ class Store:
             for r in changed:
                 if not r.get("deleted") and r["id"] in book["posts"]:
                     book["posts"][r["id"]] = self.record(r)
-            if since is None:
-                posts = sorted(book["posts"].values(), key=lambda p: p["t"])
-            else:
+            made = [r["createdAt"] for r in changed if r.get("createdAt")]
+            if made:
+                book["from"] = min([*made, book["from"]] if book["from"] else made)
+            # by time, and by id where posts carry the same one, so that the order of a piece
+            # is the order the same posts have in the whole logbook
+            if piece or since is not None:
                 ids = {r["id"] for r in changed if not r.get("deleted")}
-                posts = sorted((book["posts"][i] for i in ids), key=lambda p: p["t"])
-            return {"posts": posts, "removed": removed, "since": book["since"]}
+                posts = sorted((book["posts"][i] for i in ids if i in book["posts"]), key=_in_order)
+            else:
+                posts = sorted(book["posts"].values(), key=_in_order)
+            return {"posts": posts, "removed": removed, "since": book["since"],
+                    "from": book["from"], "whole": book["whole"]}
 
     # -- writing ----------------------------------------------------------------------
 
@@ -1157,8 +1191,18 @@ class _Posts(_Base):
         if not _ID.match(logbook):
             raise tornado.web.HTTPError(400, reason="not a logbook id")
         since = self.get_query_argument("since", None)
+        # a piece from the end: how many posts, and where the piece before it stopped
+        newest = self.get_query_argument("newest", None)
+        before = self.get_query_argument("before", None)
+        if newest is not None:
+            try:
+                newest = min(max(int(newest), 1), 5000)
+            except ValueError:
+                raise tornado.web.HTTPError(400, reason="newest is a number of posts")
+        if before and not _ISO.match(before):
+            raise tornado.web.HTTPError(400, reason="before is a time as SciLog writes it")
         self.set_header("Cache-Control", "no-store")
-        self.finish(await self.blocking(self.app.store.posts, logbook, since))
+        self.finish(await self.blocking(self.app.store.posts, logbook, since, newest, before))
 
 
 class _Image(_Base):

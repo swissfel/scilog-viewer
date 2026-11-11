@@ -3,6 +3,8 @@
 Read and write [SciLog](https://scilog.psi.ch), PSI's electronic logbook, in the browser:
 
 - one logbook as a continuous flow of days, newest at the bottom, new posts appearing by themselves;
+- a long logbook is read from its end: the newest posts are on the screen at once and the older days
+  fill in above them while you read, each piece larger than the last;
 - a left pane with either the **outline** (months, days, posts, headings) or the **map**: the flow drawn
   small, with figures, tables, lists and code recognisable by their look; a click jumps there;
 - fuzzy search (typos allowed) with previews;

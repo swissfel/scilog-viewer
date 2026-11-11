@@ -398,6 +398,28 @@ class Reader:
                     "expiresAt": True, "readACL": True, "updateACL": True, "deleteACL": True}
     CHILD_WHERE = {"snippetType": "paragraph", "linkType": {"inq": ["comment", "quote"]}}
 
+    def _post_query(self, children):
+        """The fields a post is read with, and the comments and quotes with it."""
+        fields = dict(self.POST_FIELDS, updatedAt=True, updatedBy=True, updateACL=True, ownerGroup=True,
+                      accessGroups=True, isPrivate=True, defaultOrder=True, expiresAt=True, readACL=True, deleteACL=True)
+        extra = {"include": [{"relation": "subsnippets", "scope": {"where": self.CHILD_WHERE, "fields": self.CHILD_FIELDS}}]} if children else {}
+        return fields, extra
+
+    def newest_posts(self, logbook_id, n, before=None, children=False):
+        """The n newest posts of a logbook, oldest first in the result; with
+        `before` (ISO) the n newest of those written no later than that. A long
+        logbook is read from its end this way, a piece at a time, so that its
+        last day is there while the rest is still coming."""
+        where = {"snippetType": "paragraph", "parentId": logbook_id}
+        if before:
+            # no later than, not before: two posts can carry the same instant, and the piece
+            # before ended on one of them. The caller drops the ones it has already.
+            where["createdAt"] = {"lte": before}
+        fields, extra = self._post_query(children)
+        rows = self.get("/basesnippets", {"where": where, "order": ["createdAt DESC"], "limit": n,
+                                          "fields": fields, **extra})
+        return list(reversed(rows))
+
     def posts(self, logbook_id, updated_after=None, limit=100000, children=False):
         """Every post of a logbook as SciLog stores it (HTML, files, tags),
         oldest first; with updated_after (ISO) only those created or edited
@@ -407,9 +429,7 @@ class Reader:
         where = {"snippetType": "paragraph", "parentId": logbook_id}
         if updated_after:
             where["updatedAt"] = {"gt": updated_after}
-        fields = dict(self.POST_FIELDS, updatedAt=True, updatedBy=True, updateACL=True, ownerGroup=True,
-                      accessGroups=True, isPrivate=True, defaultOrder=True, expiresAt=True, readACL=True, deleteACL=True)
-        extra = {"include": [{"relation": "subsnippets", "scope": {"where": self.CHILD_WHERE, "fields": self.CHILD_FIELDS}}]} if children else {}
+        fields, extra = self._post_query(children)
         out, skip = [], 0
         while len(out) < limit:
             rows = self.get("/basesnippets", {
