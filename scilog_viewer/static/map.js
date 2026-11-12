@@ -15,6 +15,7 @@ function setPane(mode) {
   $("#outline-tree").hidden = mode !== "outline";
   $("#map").hidden = mode !== "map";
   $("#headings").hidden = mode !== "headings";
+  if (typeof refreshStream === "function") refreshStream();   // drawn only while it is shown
   if (typeof setHeadingsPane === "function") setHeadingsPane(mode === "headings");
   document.querySelectorAll("#pane-tabs button").forEach((b) => b.classList.toggle("active", b.dataset.pane === mode));
   storageSet("eco-scilog-pane", mode);
@@ -31,13 +32,21 @@ function renderMap() {
   const map = $("#map");
   if (mapObserver) { mapObserver.disconnect(); mapObserver = null; }
   if (!mapState.on) { map.replaceChildren(); return; }
+  const frag = mapPieces(state.posts);
+  if (!state.posts.length) frag.append(el("p", { class: "hint", text: "No posts." }));
+  map.replaceChildren(frag);
+  observeForMap();
+}
+
+// the days and the cards of these posts, in order
+function mapPieces(posts) {
   const frag = document.createDocumentFragment();
   const cpl = charsPerLine();
   let day = null;
-  for (const p of state.posts) {
+  for (const p of posts) {
     const k = dayKey(p.t);
     if (k !== day) {
-      frag.append(el("div", { class: "m-day", title: "Go to this day", onclick: () => jumpTo(document.querySelector(`.day[data-day="${k}"]`)) }, dayTitle(p.t)));
+      frag.append(el("div", { class: "m-day", "data-day": k, title: "Go to this day", onclick: () => jumpTo(document.querySelector(`.day[data-day="${k}"]`)) }, dayTitle(p.t)));
       day = k;
     }
     const key = `${p.id}|${p.updated || ""}|${cpl}|${p.comments?.length || 0}|${p.quote ? 1 : 0}`;
@@ -50,9 +59,23 @@ function renderMap() {
     card.classList.remove("m-visible");
     frag.append(card);
   }
-  if (!state.posts.length) frag.append(el("p", { class: "hint", text: "No posts." }));
-  map.replaceChildren(frag);
-  observeForMap();
+  frag.lastDay = day;
+  return frag;
+}
+
+// A piece of older posts above the map already drawn: the map of a long logbook grows with
+// the flow instead of being drawn again for every piece.
+function prependMap(older) {
+  const map = $("#map");
+  if (!mapState.on || !older.length) return;
+  if (!map.firstElementChild) { renderMap(); return; }
+  const frag = mapPieces(older);
+  map.querySelector(".hint")?.remove();
+  const first = map.firstElementChild;
+  // the day the piece ends on has its header below already: the piece brings its own
+  if (first?.classList.contains("m-day") && first.dataset.day === frag.lastDay) first.remove();
+  map.prepend(frag);
+  observeForMap(true);
 }
 
 function mapCard(p, cpl) {
@@ -187,7 +210,9 @@ function glyph(node, cpl) {
 
 // -- which posts are in view ------------------------------------------------------------------
 
-function observeForMap() {
+function observeForMap(again = false) {
+  if (again && mapObserver) { document.querySelectorAll("#flow .post").forEach((p) => mapObserver.observe(p)); return; }
+  if (mapObserver) mapObserver.disconnect();
   mapState.visible.clear();
   mapObserver = new IntersectionObserver((entries) => {
     for (const e of entries) {

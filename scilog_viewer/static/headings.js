@@ -10,15 +10,14 @@ const hdState = {
   loose: storageGet("eco-scilog-outline-loose") === "on",
   collapsed: new Set(),
   observer: null,
+  at: null,      // the post being read: its line is marked again after every redraw
 };
 
 function setHeadingsPane(on) { hdState.on = on; renderHeadings(); }
 
-const HEAD_RX = /<(h[1-6])\b[^>]*>(.*?)<\/h[1-6]>/gis;
-function headingsOf(p) {
-  return [...p.html.matchAll(HEAD_RX)].map((h, n) => ({ level: Number(h[1][1]), text: h[2].replace(/<[^>]+>/g, "").replace(/&nbsp;/g, " ").trim(), index: n }))
-    .filter((h) => h.text);
-}
+// headsOf (app.js) reads a post's headings once and keeps them: this pane is drawn again
+// with every piece of a long logbook, and the html of every post with it.
+function headingsOf(p) { return headsOf(p).filter((h) => h.text); }
 
 function headingItems() {
   const items = [], stack = [];
@@ -40,8 +39,11 @@ function headingItems() {
 
 function renderHeadings() {
   const box = $("#headings");
-  if (hdState.observer) { hdState.observer.disconnect(); hdState.observer = null; }
-  if (!hdState.on) { box.replaceChildren(); return; }
+  if (!hdState.on) {
+    if (hdState.observer) { hdState.observer.disconnect(); hdState.observer = null; }
+    box.replaceChildren();
+    return;
+  }
   const toggle = (key, label, title) => el("button", { class: `hd-opt${hdState[key] ? " on" : ""}`, title,
     onclick: () => { hdState[key] = !hdState[key]; storageSet(`eco-scilog-outline-${key}`, hdState[key] ? "on" : "off"); renderHeadings(); } }, label);
   const frag = document.createDocumentFragment();
@@ -77,23 +79,27 @@ function renderHeadings() {
     frag.append(row);
   }
   box.replaceChildren(frag);
-  // mark what is being read
-  hdState.observer = new IntersectionObserver((entries) => {
-    for (const e of entries) {
-      if (!e.isIntersecting) continue;
-      const id = e.target.dataset.id;
-      let rows = box.querySelectorAll(`.hd-item[data-post="${id}"]`);
-      if (!rows.length) {  // a post without heading: the heading before it
-        const i = state.posts.findIndex((p) => p.id === id);
-        for (let k = i - 1; k >= 0 && !rows.length; k--) rows = box.querySelectorAll(`.hd-item[data-post="${state.posts[k].id}"]`);
-        rows = rows.length ? [rows[rows.length - 1]] : [];
-      }
-      box.querySelectorAll(".hd-item.current").forEach((r) => r.classList.remove("current"));
-      rows.forEach((r) => r.classList.add("current"));
-      if (rows[0] && !box.matches(":hover")) rows[0].scrollIntoView({ block: "nearest" });
-    }
+  // mark what is being read (the same watch across redraws: the posts in view stay in view)
+  markHeading(hdState.at, false);   // the line being read, after a redraw
+  if (!hdState.observer) hdState.observer = new IntersectionObserver((entries) => {
+    for (const e of entries) if (e.isIntersecting) markHeading((hdState.at = e.target.dataset.id), true);
   }, { root: $("#flow"), rootMargin: "-10% 0px -80% 0px" });
   document.querySelectorAll("#flow .post").forEach((p) => hdState.observer.observe(p));
+}
+
+// the line of the post being read, or -- a post without a heading -- the heading before it
+function markHeading(id, follow) {
+  if (!id) return;
+  const box = $("#headings");
+  let rows = box.querySelectorAll(`.hd-item[data-post="${id}"]`);
+  if (!rows.length) {
+    const i = state.posts.findIndex((p) => p.id === id);
+    for (let k = i - 1; k >= 0 && !rows.length; k--) rows = box.querySelectorAll(`.hd-item[data-post="${state.posts[k].id}"]`);
+    rows = rows.length ? [rows[rows.length - 1]] : [];
+  }
+  box.querySelectorAll(".hd-item.current").forEach((r) => r.classList.remove("current"));
+  rows.forEach((r) => r.classList.add("current"));
+  if (follow && rows[0] && !box.matches(":hover")) rows[0].scrollIntoView({ block: "nearest" });
 }
 
 // the pane shown first: this one, unless another was chosen last time

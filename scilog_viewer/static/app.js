@@ -284,6 +284,7 @@ function renderFlow() {
                         : "This logbook has no posts yet." }));
   olderNote(state.reading);
   if (!state.only) flow.append(composerElement());
+  hideToTop();
   observePosts();
 }
 
@@ -398,11 +399,38 @@ function lightbox(src) {
 
 // -- outline ---------------------------------------------------------------------------------
 
+// The headings of a post, read from its html once and kept. Three panes ask for them and a
+// long logbook grows pane by pane, so reading every post's html again for every piece is
+// what made the sidebars slow.
+const HEADS_RX = /<(h[1-6])\b[^>]*>(.*?)<\/h[1-6]>/gis;
+const headCache = new Map();
+function headsOf(p) {
+  const key = `${p.id}|${p.updated || ""}`;
+  let held = headCache.get(p.id);
+  if (!held || held.key !== key) {
+    held = { key, list: [...p.html.matchAll(HEADS_RX)].map((h, i) => ({
+      level: Number(h[1][1]), index: i,
+      text: h[2].replace(/<[^>]+>/g, "").replace(/&nbsp;/g, " ").trim() })) };
+    headCache.set(p.id, held);
+  }
+  return held.list;
+}
+
+// The stream pane: every post by month and day. Only the pane on show is drawn -- the other
+// two are built when their tab is chosen (refreshStream, renderMap, renderHeadings), and a
+// piece of an older logbook is put in above what they show (prependStream, prependMap).
 function renderOutline() {
   const tree = $("#outline-tree");
-  const frag = document.createDocumentFragment();
+  if (tree.hidden) tree.replaceChildren();
+  else buildStream(tree);
+  if (typeof renderMap === "function") renderMap();
+  if (typeof renderHeadings === "function") renderHeadings();
+}
+
+// the posts as the stream groups them: months, and the days within them
+function streamMonths(posts) {
   const months = [];
-  for (const p of state.posts) {
+  for (const p of posts) {
     const mk = monthKey(p.t), dk = dayKey(p.t);
     let m = months[months.length - 1];
     if (!m || m.key !== mk) months.push((m = { key: mk, t: p.t, days: [] }));
@@ -410,40 +438,85 @@ function renderOutline() {
     if (!d || d.key !== dk) m.days.push((d = { key: dk, t: p.t, posts: [] }));
     d.posts.push(p);
   }
-  months.forEach((m, i) => {
-    const recent = i >= months.length - 2;
-    const node = el("div", { class: `o-month${recent ? "" : " o-collapsed"}` });
-    const toggle = el("span", { class: "o-toggle", text: recent ? "▾" : "▸" });
-    node.append(el("div", { class: "o-label", onclick: () => { node.classList.toggle("o-collapsed"); toggle.textContent = node.classList.contains("o-collapsed") ? "▸" : "▾"; } },
-      toggle, `${monthLabel(m.t)} (${m.days.reduce((n, d) => n + d.posts.length, 0)})`));
-    const days = el("div", { class: "o-children" });
-    for (const d of m.days) {
-      const dayNode = el("div", { class: "o-day" },
-        el("div", { class: "o-label", onclick: () => jumpTo(document.querySelector(`.day[data-day="${d.key}"]`)), text: dayTitle(d.t) }));
-      for (const p of d.posts) {
-        dayNode.append(el("div", { class: "o-label o-post", "data-post": p.id, title: p.title, onclick: () => jumpToPost(p.id) },
-          `${clock(p.t)} `, ...postMarks(p), `${p.title || (p.html.includes("<img") ? "🖼 image" : p.html.includes("plot") ? "📈 plot" : "(empty)")}`));
-        const heads = [...p.html.matchAll(/<(h[1-6])\b[^>]*>(.*?)<\/h[1-6]>/gis)];
-        heads.forEach((h, n) => {
-          const text = h[2].replace(/<[^>]+>/g, "").trim();
-          if (!text || (n === 0 && text === p.title)) return;  // the post's own title is the line above
-          const level = h[1].toLowerCase();
-          const item = el("div", { class: `o-label o-head ${level}`, title: text, onclick: () => jumpTo(document.getElementById(`h-${p.id}-${n}`)) }, text);
-          if (p.can_edit && canWrite()) {
-            item.append(el("button", { class: "o-level", title: "Change this heading's level",
-              onclick: (ev) => { ev.stopPropagation(); headingMenu(ev, p.id, n, level); } }, level.toUpperCase()));
-          }
-          dayNode.append(item);
-        });
+  return months;
+}
+
+function monthNode(m, folded) {
+  const node = el("div", { class: `o-month${folded ? " o-collapsed" : ""}`, "data-month": m.key });
+  const toggle = el("span", { class: "o-toggle", text: folded ? "\u25b8" : "\u25be" });
+  node.append(el("div", { class: "o-label", onclick: () => { node.classList.toggle("o-collapsed"); toggle.textContent = node.classList.contains("o-collapsed") ? "\u25b8" : "\u25be"; } },
+    toggle, monthLabel(m.t), el("span", { class: "o-count", text: ` (${m.days.reduce((n, d) => n + d.posts.length, 0)})` })));
+  const days = el("div", { class: "o-children" });
+  for (const d of m.days) days.append(dayNode(d));
+  node.append(days);
+  return node;
+}
+
+function dayNode(d) {
+  const node = el("div", { class: "o-day", "data-day": d.key },
+    el("div", { class: "o-label", onclick: () => jumpTo(document.querySelector(`.day[data-day="${d.key}"]`)), text: dayTitle(d.t) }));
+  node.append(...postRows(d.posts));
+  return node;
+}
+
+// a post's line in the stream, with its headings below it
+function postRows(posts) {
+  const rows = [];
+  for (const p of posts) {
+    rows.push(el("div", { class: "o-label o-post", "data-post": p.id, title: p.title, onclick: () => jumpToPost(p.id) },
+      `${clock(p.t)} `, ...postMarks(p), `${p.title || (p.html.includes("<img") ? "\ud83d\uddbc image" : p.html.includes("plot") ? "\ud83d\udcc8 plot" : "(empty)")}`));
+    for (const h of headsOf(p)) {
+      if (!h.text || (h.index === 0 && h.text === p.title)) continue;  // the post's own title is the line above
+      const level = `h${h.level}`;
+      const item = el("div", { class: `o-label o-head ${level}`, title: h.text, onclick: () => jumpTo(document.getElementById(`h-${p.id}-${h.index}`)) }, h.text);
+      if (p.can_edit && canWrite()) {
+        item.append(el("button", { class: "o-level", title: "Change this heading's level",
+          onclick: (ev) => { ev.stopPropagation(); headingMenu(ev, p.id, h.index, level); } }, level.toUpperCase()));
       }
-      days.append(dayNode);
+      rows.push(item);
     }
-    node.append(days);
-    frag.append(node);
-  });
+  }
+  return rows;
+}
+
+function buildStream(tree) {
+  const months = streamMonths(state.posts);
+  const frag = document.createDocumentFragment();
+  months.forEach((m, i) => frag.append(monthNode(m, i < months.length - 2)));
   tree.replaceChildren(frag);
-  if (typeof renderMap === "function") renderMap();
-  if (typeof renderHeadings === "function") renderHeadings();
+}
+
+// the Stream tab chosen: draw what was left undrawn while it was hidden
+function refreshStream() {
+  const tree = $("#outline-tree");
+  if (!tree.hidden && !tree.firstElementChild) buildStream(tree);
+}
+
+// Older posts into the stream, above what it shows, leaving the months the reader has folded
+// or unfolded as they are. The month and the day the piece ends on continue the ones there.
+function prependStream(older) {
+  const tree = $("#outline-tree");
+  if (tree.hidden || !older.length) return;
+  if (!tree.firstElementChild) { buildStream(tree); return; }
+  const months = streamMonths(older);
+  const top = tree.querySelector(".o-month");
+  const last = months[months.length - 1];
+  if (last && top && top.dataset.month === last.key) {
+    months.pop();
+    const days = top.querySelector(".o-children");
+    const firstDay = days.querySelector(".o-day");
+    const lastDay = last.days[last.days.length - 1];
+    if (firstDay && lastDay && firstDay.dataset.day === lastDay.key) {
+      last.days.pop();
+      firstDay.querySelector(".o-label").after(...postRows(lastDay.posts));
+    }
+    days.prepend(...last.days.map(dayNode));
+    const count = top.querySelector(".o-count");
+    if (count) count.textContent = ` (${top.querySelectorAll(".o-post").length})`;
+  }
+  const frag = document.createDocumentFragment();
+  for (const m of months) frag.append(monthNode(m, true));   // older months come folded
+  tree.prepend(frag);
 }
 
 // small marks for replies, comments and inserted posts (outline, map, headings)
@@ -455,10 +528,12 @@ function postMarks(p) {
   ].filter(Boolean);
 }
 
+// `again`: posts have come in above the others -- the ones already watched stay watched
+// (watching all of them anew would mark the reading place from whichever answers first).
 let observer = null;
-function observePosts() {
-  if (observer) observer.disconnect();
-  observer = new IntersectionObserver((entries) => {
+function observePosts(again = false) {
+  if (observer && !again) observer.disconnect();
+  if (!observer || !again) observer = new IntersectionObserver((entries) => {
     for (const e of entries) {
       if (!e.isIntersecting) continue;
       const id = e.target.dataset.id;
@@ -751,6 +826,7 @@ async function openLogbook(id, postId, only = false) {
   link.hidden = false;
   $("#flow").replaceChildren(el("p", { class: "hint", text: "Reading the newest posts from SciLog ..." }));
   clearInterval(state.poll);
+  headCache.clear();   // the headings held for the panes belong to the logbook being left
   try {
     // the end of the logbook first; the rest follows below, while it is being read
     const data = await api(`/api/posts?logbook=${id}&newest=${FIRST}`);
@@ -830,13 +906,28 @@ function showOlder(older) {
   const anchor = readingAnchor();
   applyView();
   fillViews();   // the counts and the tags of a view grow with every piece
-  prependFlow(older.filter(viewFilter()));
+  const shown = older.filter(viewFilter());
+  prependFlow(shown);
   keepReading(anchor);
-  laterOutline();
-  observePosts();
+  growPanes(shown);
+  observePosts(true);
   updateToBottom();
   olderNote(state.reading);
   setStatus();
+}
+
+// The sidebars grow with the flow: the piece goes in above what they already show, so each
+// of them keeps its place and none is drawn from scratch for every piece. The outline pane
+// is the exception -- a heading nests under the headings of the posts before it, so older
+// posts can change the depth of the lines already there -- but it is drawn from the headings
+// held per post, not from the html of the whole logbook again.
+function growPanes(older) {
+  const pane = $("#outline");
+  const keep = pane.scrollHeight - pane.scrollTop;   // what is read stays where it is
+  prependStream(older);
+  if (typeof prependMap === "function") prependMap(older);
+  if (typeof renderHeadings === "function") renderHeadings();
+  pane.scrollTop = Math.max(0, pane.scrollHeight - keep);
 }
 
 // The post a link asked for, once it has been read.
@@ -881,7 +972,7 @@ function olderNote(on) {
   if (!note) $("#flow-tools")?.after(el("p", { id: "reading-older", class: "hint", text: "Reading the older posts …" }));
 }
 
-// -- to the newest post ------------------------------------------------------------------------
+// -- to the newest post, and back to the top -----------------------------------------------------
 
 function toNewest() {
   const flow = $("#flow");
@@ -897,6 +988,45 @@ function updateToBottom() {
   button.innerHTML = n ? `&#8595; ${n} new post${n > 1 ? "s" : ""}` : "&#8595; Newest";
   button.title = n ? "Posts written meanwhile, from elsewhere: go to the first one" : "To the newest post (End)";
   button.hidden = !far && !n;
+}
+
+// Scrolling back through a long logbook takes a while: a quick flick upwards offers the way
+// to the top of what has been read. The offer goes by itself a few seconds later, so it is
+// never in the way of reading; it comes back with the next flick.
+const upward = { top: 0, at: 0, run: 0 };
+let toTopTimer = null;
+
+function flowScrolled() {
+  updateToBottom();
+  const flow = $("#flow"), top = flow.scrollTop, now = performance.now();
+  const up = upward.top - top;                       // how far upwards since the last one
+  upward.run = up > 0 && now - upward.at < 500 ? upward.run + up : Math.max(0, up);
+  upward.top = top;
+  upward.at = now;
+  if (top <= 2) hideToTop();
+  else if (upward.run > flow.clientHeight * 1.5 && top > flow.clientHeight) showToTop();
+}
+
+function showToTop() {
+  const button = $("#to-top");
+  button.title = state.reading ? "To the oldest post read so far (Home)" : "To the first post (Home)";
+  button.hidden = false;
+  clearTimeout(toTopTimer);
+  toTopTimer = setTimeout(() => (button.hidden = true), 4000);
+}
+
+function hideToTop() {
+  clearTimeout(toTopTimer);
+  const button = document.getElementById("to-top");
+  if (button) button.hidden = true;
+}
+
+function toTop() {
+  const flow = $("#flow");
+  hideToTop();
+  upward.run = 0;
+  // far away: there at once -- that is what the button is for; close by: a short slide
+  flow.scrollTo({ top: 0, behavior: flow.scrollTop > flow.clientHeight * 4 ? "auto" : "smooth" });
 }
 
 // The newest post is at the bottom. Images and posts only get their real
@@ -1413,7 +1543,8 @@ async function main() {
   $("#logbook-button").onclick = () => showPicker($("#picker").hidden);
   $("#new-post").onclick = newPost;
   $("#to-bottom").onclick = () => (state.unseen.size ? toUnseen() : toNewest());
-  $("#flow").addEventListener("scroll", updateToBottom, { passive: true });
+  $("#to-top").onclick = toTop;
+  $("#flow").addEventListener("scroll", flowScrolled, { passive: true });
   $("#views-button").onclick = () => openViewsDialog();
   $("#token-badge").onclick = () => openTokenDialog();
   $("#status").onclick = () => openTokenDialog();
@@ -1467,6 +1598,7 @@ async function main() {
     else if (e.key === "l") showPicker(true);
     else if (e.key === "n") newPost();
     else if (e.key === "End" || e.key === "G") { e.preventDefault(); toNewest(); }
+    else if (e.key === "Home") { e.preventDefault(); toTop(); }
     else if (e.key === "c") toggleAllComments();
     else if (e.key === "v") $("#view").focus();
     else if (e.key === "Escape") { $("#picker").hidden = true; document.getElementById("lightbox")?.remove(); }

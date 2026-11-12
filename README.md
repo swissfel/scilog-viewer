@@ -4,9 +4,12 @@ Read and write [SciLog](https://scilog.psi.ch), PSI's electronic logbook, in the
 
 - one logbook as a continuous flow of days, newest at the bottom, new posts appearing by themselves;
 - a long logbook is read from its end: the newest posts are on the screen at once and the older days
-  fill in above them while you read, each piece larger than the last;
-- a left pane with either the **outline** (months, days, posts, headings) or the **map**: the flow drawn
-  small, with figures, tables, lists and code recognisable by their look; a click jumps there;
+  fill in above them while you read, each piece larger than the last; a quick flick upwards offers the
+  way back to the top, and goes away again by itself (Home does the same);
+- a left pane with either the **outline** (headings across all posts), the **stream** (months, days, posts)
+  or the **map**: the flow drawn small, with figures, tables, lists and code recognisable by their look;
+  a click jumps there. The pane grows with the logbook the same way the flow does -- the older days are
+  put in above what it shows, so it stays where you are reading -- and only the pane on show is drawn;
 - fuzzy search (typos allowed) with previews;
 - interactive HTML plots inline, images on their own on a tap or a click, there pinch- (or wheel-) zoomable,
   dragged about and zoomed in and out again by a double tap: on a phone a figure can be read, not only seen;
@@ -93,6 +96,10 @@ Writing is off until you switch it on per logbook (the page's "Allow writing her
 pip install -e ".[dev]"
 pytest
 ```
+
+Two of the tests run the page itself in node: the gestures of the picture window, and a logbook of
+600 posts read from its end with all three panes (`tests/test_panes.mjs`, which needs jsdom --
+`npm install jsdom` here, or `NODE_PATH` to one; without it that test is skipped).
 
 The viewer was written inside eco (gitea.psi.ch: Bernina/eco) (`eco/scilog_app`, started
 there with `eco.start_scilog()`). `tools/sync_from_eco.py /path/to/eco` rebuilds `scilog_viewer/` and the tests
