@@ -6,6 +6,11 @@ Read and write [SciLog](https://scilog.psi.ch), PSI's electronic logbook, in the
 - a long logbook is read from its end: the newest posts are on the screen at once and the older days
   fill in above them while you read, each piece larger than the last; a quick flick upwards offers the
   way back to the top, and goes away again by itself (Home does the same);
+- the day header stays at the top while its day is read and says which part of the day is on the screen
+  (night, morning, noon, afternoon, evening, late);
+- a **scroll rail** down the right: a handle wide enough for a thumb, a mark for every day on the track,
+  and, while it is held (or pointed at), a sign saying where it would take you -- the day, the part of
+  that day and the heading above that place;
 - a left pane with either the **outline** (headings across all posts), the **stream** (months, days, posts)
   or the **map**: the flow drawn small, with figures, tables, lists and code recognisable by their look;
   a click jumps there. The pane grows with the logbook the same way the flow does -- the older days are

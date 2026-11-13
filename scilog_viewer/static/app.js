@@ -75,6 +75,15 @@ function shortDate(t) {
   return `${d.getDate()} ${MONTHS[d.getMonth()]}${d.getFullYear() !== new Date().getFullYear() ? " " + d.getFullYear() : ""}`;
 }
 function dayTitle(t) { return dayLabel(t) === fullDate(t) ? fullDate(t) : `${dayLabel(t)} · ${shortDate(t)}`; }
+
+// Which part of the day a post belongs to. A beamtime day is read by its shifts more than
+// by the clock, so the day header says where in the day the reading is, and the scroll rail
+// says it for the place it would take you.
+const DAY_PARTS = [[6, "night"], [11, "morning"], [14, "noon"], [18, "afternoon"], [22, "evening"], [24, "late"]];
+function dayPart(t) {
+  const hour = new Date(t * 1000).getHours();
+  return (DAY_PARTS.find(([until]) => hour < until) || DAY_PARTS[0])[1];
+}
 function monthLabel(t) { const d = new Date(t * 1000); return `${MONTHS[d.getMonth()]} ${d.getFullYear()}`; }
 function clock(t) { const d = new Date(t * 1000); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; }
 function shortName(email) { return (email || "").split("@")[0]; }
@@ -182,7 +191,24 @@ function commentsElement(p) {
 }
 
 function dayElement(t) {
-  return el("h2", { class: "day", "data-day": dayKey(t) }, dayLabel(t), el("span", { class: "date", text: dayLabel(t) === fullDate(t) ? "" : shortDate(t) }));
+  return el("h2", { class: "day", "data-day": dayKey(t) }, dayLabel(t),
+    el("span", { class: "date", text: dayLabel(t) === fullDate(t) ? "" : shortDate(t) }),
+    el("span", { class: "part" }));   // night, morning ... : filled for the day being read
+}
+
+// The day header stays at the top while its day is read: it also says which part of that day
+// is on the screen, from the post the outline marks as the one being read.
+let partShown = null;
+function markDayPart(id) {
+  const p = state.byId.get(id);
+  if (!p) return;
+  const key = dayKey(p.t), part = dayPart(p.t);
+  if (partShown && (partShown.key !== key || partShown.part !== part)) {
+    document.querySelector(`#flow .day[data-day="${partShown.key}"] .part`)?.replaceChildren();
+  }
+  const span = document.querySelector(`#flow .day[data-day="${key}"] .part`);
+  if (span) span.textContent = part;
+  partShown = { key, part };
 }
 
 // tools that stay at the top right of the flow, level with the day header stuck there
@@ -285,6 +311,7 @@ function renderFlow() {
   olderNote(state.reading);
   if (!state.only) flow.append(composerElement());
   hideToTop();
+  partShown = null;
   observePosts();
 }
 
@@ -537,6 +564,7 @@ function observePosts(again = false) {
     for (const e of entries) {
       if (!e.isIntersecting) continue;
       const id = e.target.dataset.id;
+      markDayPart(id);
       document.querySelectorAll(".o-label.current").forEach((x) => x.classList.remove("current"));
       const item = document.querySelector(`.o-post[data-post="${id}"]`);
       if (item) {
@@ -1000,7 +1028,9 @@ function flowScrolled() {
   updateToBottom();
   const flow = $("#flow"), top = flow.scrollTop, now = performance.now();
   const up = upward.top - top;                       // how far upwards since the last one
-  upward.run = up > 0 && now - upward.at < 500 ? upward.run + up : Math.max(0, up);
+  // the rail on the right is a way back of its own: a drag with it is not a flick
+  upward.run = up > 0 && now - upward.at < 500 && !document.body.classList.contains("railing")
+    ? upward.run + up : Math.max(0, document.body.classList.contains("railing") ? 0 : up);
   upward.top = top;
   upward.at = now;
   if (top <= 2) hideToTop();

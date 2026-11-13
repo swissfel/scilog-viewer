@@ -62,19 +62,60 @@ w.ResizeObserver = Watcher;
 w.fetch = fakeFetch;
 w.matchMedia = () => ({ matches: false, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {} });
 w.Element.prototype.scrollIntoView = function () {};
+w.Element.prototype.setPointerCapture = function () {};
+w.Element.prototype.releasePointerCapture = function () {};
 w.Element.prototype.scrollTo = function (o) { if (o && typeof o === "object") this.scrollTop = o.top ?? this.scrollTop; };
 w.HTMLElement.prototype.focus = function () {};
 // the scripts of the page, in the order index.html loads them, as one script (they share
 // one scope in the browser too); main() is called by hand, below
-const files = ["app.js", "editor.js", "map.js", "views.js", "pin.js", "headings.js", "postmenu.js", "tasks.js"];
+const files = ["app.js", "editor.js", "map.js", "views.js", "pin.js", "headings.js", "postmenu.js", "tasks.js", "rail.js"];
 const src = files.map((n) => fs.readFileSync(`${DIR}/${n}`, "utf8").replace(/\nmain\(\);\s*$/, "\n")).join("\n")
-  + "\nObject.assign(window, { main, state, setPane, openLogbook, flowScrolled, hideToTop });\n";
+  + "\nObject.assign(window, { main, state, setPane, openLogbook, flowScrolled, hideToTop,"
+  + " markDayPart, dayPart, dayTitle, updateRail, drawRailTicks, railState });\n";
 try { w.eval(src); } catch (e) { console.log(`FAIL loading the page: ${e.message}\n${e.stack}`); process.exit(1); }
 const flow = w.document.getElementById("flow");
 let height = 0;
 Object.defineProperty(flow, "clientHeight", { get: () => 800, configurable: true });
 Object.defineProperty(flow, "scrollHeight", { get: () => height, configurable: true });
 Object.defineProperty(flow, "scrollTop", { get() { return this._top || 0; }, set(v) { this._top = v; }, configurable: true });
+
+// jsdom draws nothing, so the flow is given a layout of its own: every day header 32 high,
+// every post 160, and getBoundingClientRect answers out of it (the rail reads places that way).
+const tops = new Map();
+const DAY_H = 32, POST_H = 160, OTHER_H = 20;
+function layOut() {
+  let y = 0;
+  tops.clear();
+  for (const node of flow.children) {
+    tops.set(node, y);
+    y += node.classList.contains("day") ? DAY_H : node.classList.contains("post") ? POST_H : OTHER_H;
+  }
+  height = y;
+}
+const rect = (top, h, width = 900) => ({ top, bottom: top + h, height: h, left: 0, right: width, width, x: 0, y: top });
+w.Element.prototype.getBoundingClientRect = function () {
+  if (this === flow) return rect(0, 800);
+  if (this.id === "rail-handle") {
+    const moved = /translateY\(([-\d.]+)px\)/.exec(this.style.transform || "");
+    return rect(moved ? parseFloat(moved[1]) : 0, parseFloat(this.style.height) || 0, 12);
+  }
+  let node = this;
+  while (node && node.parentElement !== flow) node = node.parentElement;
+  if (!node || !tops.has(node)) return rect(0, 0);
+  const own = node === this;
+  return rect(tops.get(node) - flow.scrollTop + (own ? 0 : 24), own ? POST_H : OTHER_H);
+};
+const rail = w.document.getElementById("rail");
+Object.defineProperty(rail, "clientHeight", { get: () => 800, configurable: true });
+// what the flow would show at this scroll position, worked out from that layout alone
+function whatIsAt(scrollTop) {
+  let found = null;
+  for (const node of flow.children) {
+    if (tops.get(node) <= scrollTop + 8 && node.classList.contains("post")) found = node;
+  }
+  return found && w.state.byId.get(found.dataset.id);
+}
+const point = (type, clientY) => rail.dispatchEvent(new w.MouseEvent(type, { clientY, bubbles: true }));
 
 let fails = 0;
 const ok = (name, cond, extra = "") => { console.log(`${cond ? "ok  " : "FAIL"} ${name}${cond ? "" : "  -- " + extra}`); if (!cond) fails++; };
@@ -185,5 +226,60 @@ flow.scrollTop = 0; w.flowScrolled();
 ok("at the top it goes away by itself", toTop.hidden);
 
 w.hideToTop();
+
+// -- 7: which part of the day is being read ------------------------------------------------------
+const hourAt = (h) => new Date(2026, 0, 12, h, 30).getTime() / 1000;
+const parts = [[0, "night"], [5, "night"], [6, "morning"], [10, "morning"], [11, "noon"], [13, "noon"],
+               [14, "afternoon"], [17, "afternoon"], [18, "evening"], [21, "evening"], [22, "late"], [23, "late"]];
+ok("the day falls into night, morning, noon, afternoon, evening and late",
+   parts.every(([h, name]) => w.dayPart(hourAt(h)) === name),
+   parts.filter(([h, name]) => w.dayPart(hourAt(h)) !== name).map(([h]) => `${h}h -> ${w.dayPart(hourAt(h))}`).join(" "));
+
+const dayOf = (p) => w.document.querySelector(`#flow .day[data-day="${new Date(p.t * 1000).getFullYear()}-${new Date(p.t * 1000).getMonth()}-${new Date(p.t * 1000).getDate()}"] .part`);
+const one = w.state.posts[10], other = w.state.posts.find((p) => new Date(p.t * 1000).getDate() !== new Date(one.t * 1000).getDate());
+w.markDayPart(one.id);
+ok("the day header says which part of the day is being read", dayOf(one)?.textContent === w.dayPart(one.t),
+   `${dayOf(one)?.textContent} / ${w.dayPart(one.t)}`);
+w.markDayPart(other.id);
+ok("only the day being read carries it", dayOf(one)?.textContent === "" && dayOf(other)?.textContent === w.dayPart(other.t),
+   `${dayOf(one)?.textContent} | ${dayOf(other)?.textContent}`);
+
+// -- 8: the scroll rail --------------------------------------------------------------------------
+layOut();
+w.railState.index = null;
+w.updateRail();
+const handle = w.document.getElementById("rail-handle"), bubble = w.document.getElementById("rail-bubble");
+ok("the rail is there once there is something to scroll", !rail.hidden);
+ok("its handle is at least a fingertip tall", parseFloat(handle.style.height) >= 44, handle.style.height);
+
+point("pointerdown", 400);                       // taken in the middle of the track
+ok("holding it says where it would take you", !bubble.hidden);
+const mid = flow.scrollTop;
+ok("the middle of the rail is the middle of the logbook", Math.abs(mid / (height - 800) - 0.5) < 0.12,
+   (mid / (height - 800)).toFixed(3));
+let there = whatIsAt(mid);
+ok("the sign names the day it would take you to", bubble.querySelector(".rb-when")?.textContent === w.dayTitle(there.t),
+   `${bubble.querySelector(".rb-when")?.textContent} / ${w.dayTitle(there.t)}`);
+ok("and which part of that day", bubble.querySelector(".rb-part")?.textContent.startsWith(w.dayPart(there.t)),
+   `${bubble.querySelector(".rb-part")?.textContent} / ${w.dayPart(there.t)}`);
+ok("and the heading above that place", !!bubble.querySelector(".rb-head")?.textContent);
+
+point("pointermove", 700);                       // dragged further down
+ok("dragging it down goes further down the logbook", flow.scrollTop > mid, `${mid} -> ${flow.scrollTop}`);
+there = whatIsAt(flow.scrollTop);
+ok("the sign follows while it is dragged", bubble.querySelector(".rb-when")?.textContent === w.dayTitle(there.t));
+point("pointerup", 700);
+ok("the sign stays for a moment after letting go", !bubble.hidden);
+ok("the handle followed the flow", Math.abs(parseFloat(handle.style.transform.match(/([-\d.]+)px/)[1])
+   - (800 - parseFloat(handle.style.height)) * flow.scrollTop / (height - 800)) < 2);
+
+w.drawRailTicks();
+const ticks = all("#rail-ticks .rail-tick");
+ok("a mark on the track for every day", ticks.length === all("#flow .day").length, `${ticks.length} / ${all("#flow .day").length}`);
+ok("the first day of a month is marked more strongly", ticks[0].classList.contains("month"));
+ok("the marks are in order and inside the track",
+   ticks.every((t, i) => parseFloat(t.style.top) >= 0 && parseFloat(t.style.top) <= 800
+                          && (i === 0 || parseFloat(t.style.top) >= parseFloat(ticks[i - 1].style.top))));
+
 console.log(fails ? `\n${fails} FAILED` : "\nall ok");
 process.exit(fails ? 1 : 0);
