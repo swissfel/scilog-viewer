@@ -17,7 +17,15 @@ parser.add_argument("--token", action="store_true", help="keep your SciLog token
 parser.add_argument("--demo", nargs="?", const="", metavar="DIR",
                     help="read a made-up logbook instead of SciLog (generated once, in DIR or in the cache): "
                          "nothing is sent to SciLog and no token is needed")
+parser.add_argument("--plugin", default=os.environ.get("SCILOG_VIEWER_PLUGIN"), metavar="MODULE",
+                    help="a module whose setup(client, server) adds a site's own parts, e.g. a beamline account "
+                         "(also $SCILOG_VIEWER_PLUGIN)")
 args = parser.parse_args()
+
+if args.plugin:
+    from scilog_viewer import load_plugin
+
+    load_plugin(args.plugin)
 
 if args.token:
     import getpass

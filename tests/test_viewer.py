@@ -823,3 +823,41 @@ def test_pages_asked_for_under_another_name_are_refused(tmp_path, monkeypatch):
             assert got == code, host
     finally:
         app.stop()
+
+
+def test_a_plugin_provides_the_beamline_account(tmp_path, monkeypatch):
+    """load_plugin: a site's module adds a beamline account and its settings; SciLog is then read as that
+    account on a shared account, and its token is asked for again after SciLog refused it."""
+    import sys
+
+    from scilog_viewer import client, load_plugin, server
+
+    (tmp_path / "site_plugin.py").write_text(
+        "def setup(client, server):\n"
+        "    client.FUNCTIONAL_USER = 'beamline@example.org'\n"
+        "    client.SHARED_ACCOUNTS = ('shared-account',)\n"
+        "    calls = []\n"
+        "    def functional_login(url, session=None, timeout=30):\n"
+        "        calls.append(url)\n"
+        "        return 'h.' + __import__('base64').urlsafe_b64encode(b'{\"exp\": 9999999999}').decode().rstrip('=') + '.s'\n"
+        "    functional_login.calls = calls\n"
+        "    client.functional_login = functional_login\n"
+        "    server.DEFAULT_WRITE_LOGBOOKS = ['a' * 24]\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    for name in ("FUNCTIONAL_USER", "SHARED_ACCOUNTS", "functional_login"):
+        monkeypatch.setattr(client, name, getattr(client, name))
+    monkeypatch.setattr(server, "DEFAULT_WRITE_LOGBOOKS", server.DEFAULT_WRITE_LOGBOOKS)
+    monkeypatch.setattr(client, "_functional", {})
+    assert not client.functional_available()
+    load_plugin("site_plugin")
+    sys.modules.pop("site_plugin")
+    assert client.functional_available()
+    assert server.load_config(tmp_path / "missing.json")["write_logbooks"] == ["a" * 24]
+    monkeypatch.setattr("getpass.getuser", lambda: "shared-account")
+    r = client.reader()
+    assert r.identity == "the beamline account beamline@example.org"
+    client.reader()
+    assert len(client.functional_login.calls) == 1  # kept until it expires
+    client._functional.clear()  # what a refused token does
+    client.reader()
+    assert len(client.functional_login.calls) == 2

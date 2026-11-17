@@ -66,6 +66,11 @@ def token(path=None):
     return None, None
 
 
+#: accounts several people use (no personal token is kept or used there); a plugin may add
+#: to these, and so may $SCILOG_VIEWER_SHARED_ACCOUNTS (comma separated)
+SHARED_ACCOUNTS = ()
+
+
 def _shared_account():
     import getpass
 
@@ -74,30 +79,68 @@ def _shared_account():
         user = getpass.getuser()
     except Exception:
         return None
-    return user if user in shared else None
+    return user if user in shared or user in SHARED_ACCOUNTS else None
 
 
-#: no beamline (functional) account in this package: a token is always personal
+# -- a beamline (functional) account, provided by a plugin ---------------------------
+#
+# Without a plugin there is none, and SciLog is always read with a personal token. A
+# plugin (see scilog_viewer.load_plugin) sets FUNCTIONAL_USER and functional_login, a
+# function (url, session, timeout) -> a SciLog token for that account, or None when its
+# password is not readable here. The token is kept here until shortly before it expires
+# or SciLog refuses it.
+
 FUNCTIONAL_USER = ""
+functional_login = None
+_functional = {}  # url -> (token, exp)
+
+
+def login(user, password, url=URL, session=None, timeout=30):
+    """A SciLog token for a local (non-SSO) account, such as a beamline account."""
+    if session is None:
+        import requests
+
+        session = requests.Session()
+    r = session.post(url.rstrip("/") + "/users/login", json={"principal": user, "password": password}, timeout=timeout)
+    r.raise_for_status()
+    return r.json()["token"]
 
 
 def functional_available():
-    """There is no beamline account to read SciLog as here."""
-    return False
+    """Whether reader(personal=False) can log in as the beamline account here."""
+    if not (FUNCTIONAL_USER and functional_login):
+        return False
+    available = getattr(functional_login, "available", None)
+    return bool(available()) if available else True
+
+
+def _functional_reader(url, session, timeout):
+    cached = _functional.get(url)
+    if not cached or cached[1] < time.time() + 600:
+        value = functional_login(url=url, session=session, timeout=timeout) if functional_login else None
+        if not value:
+            raise TokenError(TOKEN_HELP + ("\n(The beamline account would work without a token, but it cannot "
+                                           "log in here.)" if FUNCTIONAL_USER else ""))
+        _functional[url] = cached = (value, claims(value).get("exp") or time.time() + 3600)
+    r = Reader(cached[0], url=url, timeout=timeout, session=session)
+    r.identity = f"the beamline account {FUNCTIONAL_USER}"
+    return r
 
 
 def reader(url=URL, session=None, timeout=30, personal=True):
-    """A Reader with your personal token."""
-    if not personal:
-        raise TokenError("there is no beamline account here: use your own token")
+    """A Reader as yourself (your personal token) or, with personal=False or on a shared
+    account, as the beamline account if a plugin provides one. Its `identity` says which."""
+    if personal and not _shared_account():
+        value, where = token()
+        if value:
+            r = Reader(value, url=url, timeout=timeout, session=session)
+            r.identity = f"{describe(value).split(',')[0]} (token from {where})"
+            return r
+    if functional_available():
+        return _functional_reader(url, session, timeout)
     if _shared_account():
         raise TokenError("this is a shared account: no personal token here")
-    value, where = token()
-    if not value:
-        raise TokenError(TOKEN_HELP)
-    r = Reader(value, url=url, timeout=timeout, session=session)
-    r.identity = f"{describe(value).split(',')[0]} (token from {where})"
-    return r
+    raise TokenError(TOKEN_HELP)
 
 
 def can_open_browser():
@@ -189,6 +232,7 @@ class Reader:
             headers={"Authorization": "Bearer " + self.token, "Accept": "application/json"},
         )
         if r.status_code == 401:
+            _functional.clear()  # a beamline-account token: log in again next time
             raise TokenError(
                 f"SciLog refused the token ({describe(self.token)}) -- get a new one:\n{TOKEN_STEPS}\n"
                 "  3. python -m scilog_viewer --token"
@@ -296,6 +340,7 @@ class Reader:
             headers={"Authorization": "Bearer " + self.token, "Accept": "application/json"}, **kwargs,
         )
         if r.status_code == 401:
+            _functional.clear()
             raise TokenError(f"SciLog refused the token ({describe(self.token)}) -- get a new one:\n{TOKEN_STEPS}")
         if r.status_code >= 400:
             try:

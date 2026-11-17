@@ -32,20 +32,39 @@ _url = None
 _output = collections.deque(maxlen=200)
 
 
-def start(port=DEFAULT_PORT, open_browser=None, timeout=60, logbook=None):
+def load_plugin(name):
+    """Import the module `name` and call its setup(client, server) with the
+    modules scilog_viewer.client and scilog_viewer.server, before the server
+    starts. That is how a site adds what only it has, e.g. a beamline account
+    (client.FUNCTIONAL_USER, client.functional_login), accounts several people
+    share (client.SHARED_ACCOUNTS), where the settings live
+    (server.CONFIG_PATH) or which logbooks are writable until a user says
+    otherwise (server.DEFAULT_WRITE_LOGBOOKS)."""
+    import importlib
+
+    from scilog_viewer import client, server
+
+    module = importlib.import_module(name)
+    module.setup(client, server)
+    return module
+
+
+def start(port=DEFAULT_PORT, open_browser=None, timeout=60, logbook=None, plugin=None, path=()):
     """Start the server as a separate process (once per session) and print
     its address; opens a browser where one can be started (a display, not
     over ssh). The process ends when this session does. `logbook` (an id)
-    makes the address open that logbook."""
+    makes the address open that logbook. `plugin` (a module name, see
+    load_plugin) is loaded by the server; `path` lists directories it is
+    imported from, ahead of PYTHONPATH."""
     global _process, _url
     if _process is None or _process.poll() is not None:
         token = secrets.token_urlsafe(24)
         env = dict(os.environ, **{TOKEN_ENV: token})
-        env["PYTHONPATH"] = os.pathsep.join(p for p in [os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+        env["PYTHONPATH"] = os.pathsep.join(p for p in [*map(str, path), os.path.dirname(os.path.dirname(__file__)),
                                                          env.get("PYTHONPATH", "")] if p)
         _process = subprocess.Popen(
             [sys.executable, "-m", "scilog_viewer", "--port", str(port), "--no-browser",
-             "--parent", str(os.getpid()), "--quiet"],
+             "--parent", str(os.getpid()), "--quiet", *(["--plugin", plugin] if plugin else [])],
             env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             start_new_session=True,  # Ctrl-C in the session does not reach it
         )

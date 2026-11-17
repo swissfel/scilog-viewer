@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=68", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "scilog-viewer"
-version = "0.2.8"
+dynamic = ["version"]
 description = "Read and write SciLog (PSI's electronic logbook) in the browser: a flow of days, outline and map, fuzzy search, editing, views."
 requires-python = ">=3.10"
 dependencies = ["tornado>=6", "requests>=2.28", "nh3>=0.2.14"]
@@ -25,6 +25,9 @@ packages = ["scilog_viewer"]
 
 [tool.setuptools.package-data]
 scilog_viewer = ["static/*"]
+
+[tool.setuptools_scm]
+# the version comes from the git tag: v0.2.9 -> 0.2.9 (see "Releasing" in README.md)
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

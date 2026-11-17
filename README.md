@@ -122,9 +122,26 @@ Two of the tests run the page itself in node: the gestures of the picture window
 600 posts read from its end with all three panes (`tests/test_panes.mjs`, which needs jsdom --
 `npm install jsdom` here, or `NODE_PATH` to one; without it that test is skipped).
 
-The viewer was written inside eco (gitea.psi.ch: Bernina/eco) (`eco/scilog_app`, started
-there with `eco.start_scilog()`). `tools/sync_from_eco.py /path/to/eco` rebuilds `scilog_viewer/` and the tests
-from an eco checkout, leaving out what is eco-specific, until eco uses this package instead of its own copy.
+Releasing: `git config core.hooksPath .githooks` once per clone. Then every push of `main` is a release:
+the pre-push hook tags the next patch version (`v0.2.9` after `v0.2.8`), `publish.yml` puts it on PyPI and
+`build.yml` attaches the programs and the Android app to a GitHub release. The version comes from that tag
+(setuptools-scm). `SKIP_AUTOTAG=1 git push` pushes without releasing; a bigger step is tagged by hand before
+the push (`git tag v0.3.0`).
+
+## A site's own parts (plugins)
+
+`python -m scilog_viewer --plugin MODULE` (or `$SCILOG_VIEWER_PLUGIN`, or `scilog_viewer.start(plugin=...)`)
+imports `MODULE` and calls its `setup(client, server)` before the server starts. It may set:
+
+- `client.FUNCTIONAL_USER` and `client.functional_login(url, session, timeout)` -- a beamline account whose
+  token the function returns (`client.login(user, password)` does SciLog's local login), or `None` when its
+  password is not readable; give the function an `available()` attribute to say so without logging in;
+- `client.SHARED_ACCOUNTS` -- accounts several people use: no personal token is kept or used there;
+- `server.CONFIG_PATH`, `server.DEFAULT_WRITE_LOGBOOKS` -- where the settings live, and which logbooks are
+  writable until a user says otherwise.
+
+eco (gitea.psi.ch: Bernina/eco), where the viewer was first written, uses this for the Bernina beamline
+account (`eco.scilog_viewer_plugin`); `scilog.viewer()` in an eco session starts this package.
 
 ## Where this could go
 
