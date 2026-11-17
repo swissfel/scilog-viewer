@@ -92,8 +92,7 @@ only the page itself sends, from the page's own origin. Everything is done with 
 what you can read and change, as in its own page.
 
 Writing is off until you switch it on per logbook (the page's "Allow writing here", or
-`~/.config/scilog-viewer/config.json`: `{"write_logbooks": [ids] or "all"}`); until then only the test logbook
-`0123456789abcdef01234567` (p10002) is writable.
+`~/.config/scilog-viewer/config.json`: `{"write_logbooks": [ids] or "all"}`); until then nothing is written.
 
 ## A logbook to try it on, without SciLog
 

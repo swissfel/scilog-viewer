@@ -26,10 +26,8 @@ jobs:
         include:
           - { os: ubuntu-22.04, name: scilog-viewer-linux-x86_64 }
           - { os: windows-latest, name: scilog-viewer-windows-x86_64.exe }
-          # macOS: off while GitHub gives this private repository no macOS runner
-          # (the jobs were cancelled at once or queued for hours):
-          # - { os: macos-14, name: scilog-viewer-macos-arm64 }
-          # - { os: macos-13, name: scilog-viewer-macos-x86_64 }
+          - { os: macos-14, name: scilog-viewer-macos-arm64 }
+          - { os: macos-13, name: scilog-viewer-macos-x86_64 }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

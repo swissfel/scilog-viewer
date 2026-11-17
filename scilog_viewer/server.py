@@ -40,8 +40,8 @@ _ISO = re.compile(r"^\d{4}-\d{2}-\d{2}[T ][\d:.]{5,15}(Z|[+-]\d{2}:?\d{2})?$")
 _ID = re.compile(r"^[0-9a-f]{24}$")
 #: which logbooks may be written to: ~/.config/scilog-viewer/config.json {"write_logbooks": [ids] or "all"}
 CONFIG_PATH = logs_scilog.CONFIG_DIR / "config.json"
-#: until a user says otherwise, writing goes only to the test logbook (p10002)
-DEFAULT_WRITE_LOGBOOKS = ["0123456789abcdef01234567"]
+#: until a user says otherwise, no logbook is written to
+DEFAULT_WRITE_LOGBOOKS = []
 MAX_UPLOAD = 50 * 1024 * 1024
 
 

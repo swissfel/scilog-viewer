@@ -297,7 +297,7 @@ def test_writing_goes_only_where_it_is_allowed(tmp_path, monkeypatch):
     # as the beamline account too (decided 2026-11-10): the page labels it; SciLog decides as for anyone
     beamline.save(LB, None, "<p>x</p>", [])
     assert beamline.me()["as_beamline"]
-    assert load_config(tmp_path / "missing.json")["write_logbooks"] == ["0123456789abcdef01234567"]
+    assert load_config(tmp_path / "missing.json")["write_logbooks"] == []
 
 
 def test_a_write_needs_the_page_s_own_header(tmp_path, monkeypatch):
