@@ -55,13 +55,15 @@ function railIndex() {
     const node = document.getElementById(`p-${p.id}`);
     if (node) posts.push({ at: node.getBoundingClientRect().top - base, t: p.t, id: p.id });
   }
-  const heads = [];
-  for (const h of flow.querySelectorAll(".body h1, .body h2")) {
+  // headings down to the third order (the day header shows those); the sign only the first two
+  const all = [];
+  for (const h of flow.querySelectorAll(".body h1, .body h2, .body h3")) {
     const text = h.textContent.trim();
-    if (text) heads.push({ at: h.getBoundingClientRect().top - base, text: text.slice(0, 70),
-                           level: h.tagName === "H1" ? 1 : 2 });
+    const post = state.byId.get(h.closest(".post")?.dataset.id);
+    if (text) all.push({ at: h.getBoundingClientRect().top - base, text: text.slice(0, 70),
+                         level: Number(h.tagName[1]), day: post ? dayKey(post.t) : null });
   }
-  railState.index = { posts, heads };
+  railState.index = { posts, heads: all.filter((h) => h.level <= 2), all };
   return railState.index;
 }
 

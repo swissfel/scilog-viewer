@@ -190,11 +190,49 @@ function commentsElement(p) {
   return box;
 }
 
+// The day header: on the left the heading being read (filled while the header is stuck at the
+// top), on the right, small, the day, its date and the part of the day.
 function dayElement(t) {
-  return el("h2", { class: "day", "data-day": dayKey(t) }, dayLabel(t),
-    el("span", { class: "date", text: dayLabel(t) === fullDate(t) ? "" : shortDate(t) }),
-    el("span", { class: "part" }));   // night, morning ... : filled for the day being read
+  return el("h2", { class: "day", "data-day": dayKey(t) },
+    el("span", { class: "now" }),
+    el("span", { class: "when" }, el("span", { class: "label", text: dayLabel(t) }),
+      el("span", { class: "date", text: dayLabel(t) === fullDate(t) ? "" : shortDate(t) }),
+      el("span", { class: "part" })));   // night, morning ... : filled for the day being read
 }
+
+// The headings (down to the third order) of the day being read, above the top of the flow,
+// shown in the day header stuck there. Read from the rail's index of where things are.
+let headShown = { key: null, text: "" };
+let headFrame = 0;
+function markDayHeading() {
+  headFrame = 0;
+  const flow = $("#flow");
+  if (!flow || !state.logbook || typeof railIndex !== "function") return;
+  const stuck = [...flow.querySelectorAll(".day")].reverse()
+    .find((d) => d.getBoundingClientRect().top <= flow.getBoundingClientRect().top + 1);
+  const at = flow.scrollTop + (stuck ? stuck.offsetHeight : 0) + 8;
+  const key = stuck?.dataset.day || null;
+  // the open headings of this day: the last one of each order above the top, deeper ones
+  // closed by a new one above them; shown are the last two ("Section › Subsection")
+  const open = [];
+  for (const h of railIndex().all) {
+    if (h.at > at) break;
+    if (h.day !== key) { open.length = 0; continue; }
+    open.length = Math.min(open.length, h.level - 1);
+    while (open.length < h.level - 1) open.push(null);
+    open.push(h);
+  }
+  const text = open.filter(Boolean).slice(-2).map((h) => h.text).join(" › ");
+  if (key === headShown.key && text === headShown.text) return;
+  if (headShown.key && headShown.key !== key) {
+    const old = flow.querySelector(`.day[data-day="${headShown.key}"] .now`);
+    if (old) { old.textContent = ""; old.title = ""; }
+  }
+  const span = key && flow.querySelector(`.day[data-day="${key}"] .now`);
+  if (span) { span.textContent = text; span.title = text; }
+  headShown = { key, text };
+}
+function laterHeading() { if (!headFrame) headFrame = requestAnimationFrame(markDayHeading); }
 
 // The day header stays at the top while its day is read: it also says which part of that day
 // is on the screen, from the post the outline marks as the one being read.
@@ -565,6 +603,7 @@ function observePosts(again = false) {
       if (!e.isIntersecting) continue;
       const id = e.target.dataset.id;
       markDayPart(id);
+      laterHeading();
       document.querySelectorAll(".o-label.current").forEach((x) => x.classList.remove("current"));
       const item = document.querySelector(`.o-post[data-post="${id}"]`);
       if (item) {
@@ -1026,6 +1065,7 @@ let toTopTimer = null;
 
 function flowScrolled() {
   updateToBottom();
+  laterHeading();
   const flow = $("#flow"), top = flow.scrollTop, now = performance.now();
   const up = upward.top - top;                       // how far upwards since the last one
   // the rail on the right is a way back of its own: a drag with it is not a flick
