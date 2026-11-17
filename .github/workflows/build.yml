@@ -27,7 +27,7 @@ jobs:
         include:
           - { os: ubuntu-22.04, name: scilog-viewer-linux-x86_64 }
           - { os: windows-latest, name: scilog-viewer-windows-x86_64.exe }
-          - { os: macos-14, name: scilog-viewer-macos-arm64 }
+          - { os: macos-15, name: scilog-viewer-macos-arm64 }  # macos-14 is no longer offered
           - { os: macos-15-intel, name: scilog-viewer-macos-x86_64 }  # macos-13 is retired
     runs-on: ${{ matrix.os }}
     steps:
