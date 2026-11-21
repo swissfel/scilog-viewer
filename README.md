@@ -29,18 +29,28 @@ Read and write [SciLog](https://scilog.psi.ch), PSI's electronic logbook, in the
 
 ## Run it
 
-**As a program** (no Python needed): download the one for your system from the
-[releases](../../releases) (or the latest [build](../../actions/workflows/build.yml) run's artifacts) and start it:
+**Installed** (no Python needed): take the one for your system from the
+[releases](../../releases) (or the latest [build](../../actions/workflows/build.yml) run's artifacts).
+These put the viewer in the menu, with its icon, and can be removed again as any other program:
+
+| system | file |
+|---|---|
+| Debian, Ubuntu | `scilog-viewer_<version>_amd64.deb` -- `sudo apt install ./scilog-viewer_*.deb` |
+| Red Hat, Alma, Fedora, openSUSE | `scilog-viewer-<version>-1.x86_64.rpm` -- `sudo dnf install ./scilog-viewer-*.rpm` |
+| Windows | `scilog-viewer-setup-windows-x86_64.exe` -- for you alone, so it asks for no administrator |
+| Android | `scilog-viewer-android.apk` (see [From a phone](#from-a-phone)) |
+
+**As one file**, to carry about or to run where nothing may be installed:
 
 | system | file |
 |---|---|
 | Linux (x86-64) | `scilog-viewer-linux-x86_64` (make it executable: `chmod +x`) |
 | Windows | `scilog-viewer-windows-x86_64.exe` |
-| Android | `scilog-viewer-android.apk` (see [From a phone](#from-a-phone)) |
+| macOS (Apple silicon, Intel) | `scilog-viewer-macos-arm64`, `scilog-viewer-macos-x86_64` -- unsigned: start the first one through right-click → Open |
 
-No macOS program for now (GitHub runs no macOS builds for this repository); on a Mac use `pip install` below.
-
-It opens the viewer in your browser and runs until its window is closed.
+Either way it opens the viewer in your browser and runs until its window is closed. The icon and the
+packages are made by `packaging/make_icons.py`, `packaging/linux_package.sh` and
+`packaging/windows_setup.iss` -- all of it from `packaging/icon.svg`, the drawing the Android app uses too.
 
 **With Python:**
 

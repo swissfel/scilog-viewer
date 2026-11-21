@@ -1,4 +1,5 @@
-# The SciLog viewer as one program per system, and as an Android app. Runs on
+# The SciLog viewer as one program per system, as installers for Linux (.deb, .rpm, both
+# with a menu entry and its icon) and Windows (Inno Setup), and as an Android app. Runs on
 # demand and for tags v*; a tag also makes a release with all of them attached.
 # Android signing key: repository secrets SCILOG_KEYSTORE_B64 / SCILOG_KEYSTORE_PASSWORD
 # (otherwise debug-signed, and an update must then be installed after removing the old app).
@@ -50,6 +51,32 @@ jobs:
           mkdir out && cp "$src" "out/${{ matrix.name }}"
       - uses: actions/upload-artifact@v4
         with: { name: "${{ matrix.name }}", path: "out/${{ matrix.name }}" }
+      # and the same program as something a desktop installs: an entry in the menu, with its icon
+      - name: a .deb and an .rpm
+        if: startsWith(matrix.os, 'ubuntu')
+        shell: bash
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq rpm
+          sh packaging/linux_package.sh
+      - name: a Windows installer
+        if: startsWith(matrix.os, 'windows')
+        shell: bash
+        run: |
+          python packaging/make_icons.py build/icons
+          iscc="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"
+          [ -f "$iscc" ] || choco install innosetup -y --no-progress
+          version=${GITHUB_REF_NAME#v}
+          case "$version" in "" | *[!0-9.]*) version=0.0.0 ;; esac
+          "$iscc" "/DAppVersion=$version" packaging/windows_setup.iss
+      - uses: actions/upload-artifact@v4
+        if: startsWith(matrix.os, 'ubuntu') || startsWith(matrix.os, 'windows')
+        with:
+          name: "installer-${{ matrix.os }}"
+          if-no-files-found: error
+          path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/scilog-viewer-setup-*.exe
   android:
     needs: test
     runs-on: ubuntu-latest

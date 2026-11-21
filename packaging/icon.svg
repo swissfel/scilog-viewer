@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The viewer's icon: an open logbook, two pages with lines. The same drawing as the
+     Android launcher (android/app/src/main/res/drawable/ic_launcher_foreground.xml), with
+     the pages a little larger, because a desktop icon has no safe zone to keep clear of.
+     packaging/make_icons.py draws the same shapes into the PNG and ICO files a package
+     and a Windows program need. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="108" height="108" viewBox="0 0 108 108">
+  <rect width="108" height="108" rx="19" ry="19" fill="#1F5FBF"/>
+  <g transform="translate(54 54) scale(1.3) translate(-54 -54)">
+    <path fill="#FFFFFF" d="M30,36 L52,40 L52,74 L30,70 Z"/>
+    <path fill="#FFFFFF" d="M56,40 L78,36 L78,70 L56,74 Z"/>
+    <path stroke="#1F5FBF" stroke-width="2" stroke-linecap="round" fill="none"
+          d="M35,46 L47,48 M35,52 L47,54 M35,58 L47,60 M61,48 L73,46 M61,54 L73,52 M61,60 L73,58"/>
+  </g>
+</svg>
