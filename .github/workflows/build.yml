@@ -67,7 +67,10 @@ jobs:
           [ -f "$iscc" ] || choco install innosetup -y --no-progress
           version=${GITHUB_REF_NAME#v}
           case "$version" in "" | *[!0-9.]*) version=0.0.0 ;; esac
-          "$iscc" "/DAppVersion=$version" packaging/windows_setup.iss
+          # "//D": one slash is what the compiler gets, two keep this shell from reading
+          # the switch as a path and handing it over as C:/Program Files/Git/D...
+          "$iscc" "//DAppVersion=$version" packaging/windows_setup.iss
+          ls -l dist/scilog-viewer-setup-windows-x86_64.exe
       - uses: actions/upload-artifact@v4
         if: startsWith(matrix.os, 'ubuntu') || startsWith(matrix.os, 'windows')
         with:
