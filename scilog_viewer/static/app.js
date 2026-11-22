@@ -365,6 +365,14 @@ function preparePlot(span) {
 function runPlot(span, id) {
   // its own origin (the server sends CSP sandbox): no cookie, no access to this page
   const frame = el("iframe", { src: `file/${id}`, sandbox: "allow-scripts", loading: "lazy", title: span.dataset.name || "plot" });
+  if (window.ScilogBrowser) {
+    // in the browser-only viewer the plot comes from its service worker, which a sandboxed frame does not go
+    // through: fetched here and given to the frame as its document, which stays in an origin of its own
+    frame.removeAttribute("src");
+    fetch(`file/${id}`).then((r) => (r.ok ? r.text() : Promise.reject(new Error(`${r.status}`))))
+      .then((html) => { frame.srcdoc = html; })
+      .catch((e) => { frame.srcdoc = `<p style="font:14px sans-serif">The plot could not be read (${e.message}).</p>`; });
+  }
   span.querySelector("button")?.remove();
   span.append(frame);
 }
@@ -665,7 +673,7 @@ let searchWorker = null, searchSeq = 0;
 const searchPending = new Map();
 function startSearchWorker() {
   try {
-    searchWorker = new Worker("/static/search-worker.js");
+    searchWorker = new Worker("static/search-worker.js");
     searchWorker.onmessage = searchAnswered;
     searchWorker.onerror = () => { searchWorker = null; searchPending.forEach((w) => w.resolve()); searchPending.clear(); prepareSearch(); };
   } catch (e) { searchWorker = null; }
@@ -1269,7 +1277,7 @@ function composerElement() {
 async function askToAllowWriting() {
   if (writeBlocker() !== "off-here") return;
   if (!confirm(`Allow writing to "${state.logbook.name}"?\n\nYou can then post here and edit your own posts. ` +
-               "This is remembered for you (in ~/.config/scilog-viewer/config.json) and can be switched off again there.")) return;
+               (window.ScilogBrowser ? "This is remembered in this browser." : "This is remembered for you (in ~/.config/scilog-viewer/config.json) and can be switched off again there."))) return;
   try {
     state.me = await writeApi("/api/write-logbook", "POST", { logbook: state.logbook.id, on: true });
   } catch (e) { toast(`Not switched on: ${e.message}`); return; }
@@ -1530,7 +1538,9 @@ function openTokenDialog(status = state.token || {}) {
         tokenGuide(),
         el("p", { class: "tk-paste", text: "Paste the token here:" }),
         input,
-        shared ? null : el("label", { class: "tk-keep" }, keep, ` Keep it on this computer (readable only by you); otherwise for ${hours} hours, in memory only`)),
+        shared ? null : el("label", { class: "tk-keep" }, keep, window.ScilogBrowser
+          ? ` Keep it in this browser; otherwise only in this tab, for at most ${hours} hours`
+          : ` Keep it on this computer (readable only by you); otherwise for ${hours} hours, in memory only`)),
       note),
     el("div", { class: "ed-foot" }, el("span", { class: "spacer" }), save));
   save.onclick = async () => {

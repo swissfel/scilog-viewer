@@ -56,6 +56,22 @@ The app's launcher icons live in `android/app/src/main/res`: the adaptive one a 
 every density for launchers that ask for one. `python packaging/make_icons.py --android` draws those
 again if the icon changes.
 
+**In the browser alone** (a first version, to try): the same page as a web site of plain files, with nothing
+installed and nothing running on your side but the browser. `scilog_viewer/web/browser.js` does in the page what the
+local server does, calling SciLog's API directly (SciLog allows that from any site), and the service worker
+`scilog_viewer/web/sw.js` serves the images and attachments with your token:
+
+```bash
+python tools/build_web.py                     # -> dist/web, for https://scilog.psi.ch
+cd dist/web && python -m http.server 8000     # then open http://localhost:8000
+```
+
+`.github/workflows/pages.yml` puts it on GitHub Pages. The token is entered in the page as above and kept in that
+browser's storage (or only in the tab, for at most 8 hours); the logbooks you allow writing to are remembered there
+too. Not here: the beamline account (its password cannot be given to a web page) and eco's plugin. To try it without
+SciLog, `python tools/fake_scilog.py` serves the made-up logbook through a stand-in for SciLog's API and prints the
+token it accepts; build with `--api http://localhost:8790/api/v1` for it (`tests/test_web.py` does this).
+
 **With Python:**
 
 ```bash
