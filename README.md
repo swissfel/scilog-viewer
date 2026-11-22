@@ -75,6 +75,14 @@ live:
 - the page carries a strict Content Security Policy: scripts only from the site and the editor's CDN, connections
   only to SciLog. Plots, images and downloads opened from it run sandboxed, in no origin of the site's.
 
+**Offline copies** (📴 in the bar): check logbooks in a list (or all of them) to keep them in the browser, to read
+later without a network and without a token: posts, comments, tasks and, if wanted, their images, attachments and
+interactive plots. The viewer itself is kept too, so it opens offline and shows the kept logbooks read-only.
+Before a large copy (over 500 MB, or more than half of what the browser has left) it says how large and asks: keep it
+anyway, keep it in a folder of your choice (Chrome and Edge on a computer), keep only the text, or not at all. With a
+token and a network the copies are brought up to date by themselves every few hours; unchecking one removes it.
+Anyone using that browser can read the copies, so keep none on a computer others use.
+
 The token is entered in the page as above and kept in that browser (or only in the tab, for at most 8 hours);
 "🔑 → Forget the token in this browser" removes it, which is what to do on a computer others use. The logbooks you
 allow writing to are remembered in the browser too. Not here: the beamline account (its password cannot be given to

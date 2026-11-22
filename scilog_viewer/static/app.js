@@ -1426,7 +1426,8 @@ function updateTokenBadge() {
   else if (t?.access === "beamline" && t.options?.shared) text = "👥 beamline account";
   else if (t?.personal && soon) text = left > 1 ? `🔑 token: ${Math.floor(left)} days left` : left > 0 ? `🔑 token: ${Math.max(1, Math.round(left * 24))} h left` : "🔑 token expired";
   // the browser-only viewer: always there, so that the token can be forgotten on any screen (on a shared computer)
-  else if (window.ScilogBrowser && t?.ok) text = `🔑 ${(t.identity || "").split(/[<(]/)[0].trim().split(" ")[0] || "token"}`;
+  else if (t?.offline) text = narrow() ? "📴" : "📴 Offline copy";
+  else if (window.ScilogBrowser && t?.ok) text = narrow() ? "🔑" : `🔑 ${(t.identity || "").split(/[<(]/)[0].trim().split(" ")[0] || "token"}`;
   badge.hidden = !text;
   badge.textContent = text;
   badge.title = "Whose SciLog access the viewer uses: click to change";
@@ -1505,7 +1506,8 @@ function openTokenDialog(status = state.token || {}) {
       setTimeout(() => location.reload(), 500);
     } catch (e) { note.textContent = `Not switched: ${e.message}`; note.classList.add("bad"); button.disabled = false; }
   };
-  const current = status.ok ? `Reading SciLog as ${status.identity}${until ? `, until ${until}` : ""}.` : `${status.why || "No SciLog access yet"}.`;
+  const current = status.offline ? `Reading the offline copies kept in this browser (${status.token_why || "no SciLog token"}). Enter a token below to read and write SciLog itself.`
+    : status.ok ? `Reading SciLog as ${status.identity}${until ? `, until ${until}` : ""}.` : `${status.why || "No SciLog access yet"}.`;
   const cards = [];
   if (opts.beamline?.available) {
     const b = el("button", { class: status.access === "beamline" ? "" : "primary", onclick: () => choose("beamline", b) },
@@ -1530,7 +1532,7 @@ function openTokenDialog(status = state.token || {}) {
     el("div", { class: "tk-body" },
       el("p", { class: status.ok ? "" : "bad", text: current }),
       // the browser-only viewer: on a shared computer the token must be removable from the page itself
-      window.ScilogBrowser && status.ok ? el("p", {}, el("button", { onclick: async (ev) => {
+      window.ScilogBrowser && status.ok && !status.offline ? el("p", {}, el("button", { onclick: async (ev) => {
         ev.target.disabled = true;
         try { await writeApi("/api/token/forget", "POST", {}); location.reload(); }
         catch (e) { note.textContent = `Not forgotten: ${e.message}`; note.classList.add("bad"); ev.target.disabled = false; }

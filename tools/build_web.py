@@ -71,7 +71,7 @@ def build(out, api="https://scilog.psi.ch/api/v1", web="https://scilog.psi.ch", 
     if out.exists():
         shutil.rmtree(out)
     shutil.copytree(STATIC, out / "static", ignore=shutil.ignore_patterns("index.html"))
-    for name in ("browser.js", "sw.js"):
+    for name in ("browser.js", "offline.js"):
         shutil.copy2(WEB / name, out / name)
     (out / "config.js").write_text(  # not inline: the policy allows no inline script
         "// written by tools/build_web.py\n"
@@ -88,7 +88,10 @@ def build(out, api="https://scilog.psi.ch/api/v1", web="https://scilog.psi.ch", 
                       '<script src="config.js"></script>\n<script src="browser.js"></script>\n\\1', page)
     if n != 1:
         raise RuntimeError("index.html: app.js not found")
-    page = re.sub(r'(src|href)="((?:static/[\w.-]+|config\.js|browser\.js))"', versioned, page)
+    page, n = re.subn(r'(<script src="static/rail\.js"></script>)', '\\1\n<script src="offline.js"></script>', page)
+    if n != 1:
+        raise RuntimeError("index.html: rail.js not found")
+    page = re.sub(r'(src|href)="((?:static/[\w.-]+|config\.js|browser\.js|offline\.js))"', versioned, page)
     head = (f'<meta http-equiv="Content-Security-Policy" content="{csp(api)}">\n'
             '<meta name="referrer" content="no-referrer">\n'
             '<meta name="description" content="Read and write SciLog in the browser">\n')
@@ -96,6 +99,17 @@ def build(out, api="https://scilog.psi.ch/api/v1", web="https://scilog.psi.ch", 
     if n != 1:
         raise RuntimeError("index.html: no charset line to put the policy after")
     (out / "index.html").write_text(page)
+
+    # the service worker keeps the site's files, to start without a network (offline copies)
+    shell = ["", "index.html", "config.js", "browser.js", "offline.js"] + sorted(
+        p.relative_to(out).as_posix() for p in (out / "static").rglob("*") if p.is_file())
+    version = hashlib.sha256("".join(f"{name}:{_version(out / name)}" for name in shell[1:]).encode()).hexdigest()[:12]
+    worker = (WEB / "sw.js").read_text()
+    worker, n1 = re.subn(r"^const SHELL = \[\];", f"const SHELL = {json.dumps(shell)};", worker, flags=re.M)
+    worker, n2 = re.subn(r'^const VERSION = "dev";', f'const VERSION = "{version}";', worker, flags=re.M)
+    if (n1, n2) != (1, 1):
+        raise RuntimeError("sw.js: SHELL or VERSION not found")
+    (out / "sw.js").write_text(worker)
     (out / ".nojekyll").write_text("")  # GitHub Pages: serve the files as they are
     if cname:
         (out / "CNAME").write_text(cname.strip() + "\n")

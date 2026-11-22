@@ -7,7 +7,7 @@ import { createRequire } from "node:module";
 
 const { chromium } = createRequire(import.meta.url)("playwright");
 
-const [site, log, casesPath] = process.argv.slice(2);
+const [site, log, casesPath, apiPid, sitePid] = process.argv.slice(2);
 const token = fs.readFileSync(log, "utf8").match(/token: (\S+)/)[1];
 const fail = (msg) => { console.error(msg); process.exit(1); };
 const check = (ok, msg) => { if (!ok) fail(`FAILED: ${msg}`); console.log(`ok: ${msg}`); };
@@ -126,9 +126,61 @@ try {
   check(cspErrors.length === 0, `nothing of the viewer's own is refused by the policy${cspErrors.length ? `: ${cspErrors.join(" | ")}` : ""}`);
   problems.splice(0, problems.length, ...problems.filter((p) => !/example\.org|Failed to fetch/.test(p)));
 
+  // -- offline copies: made through the panel, read without the token, then without any network
+  const [, img2] = await call(`/api/upload?logbook=${lb}`, "POST", { file: ["offline.png", "image/png", png] });
+  const [, plot2] = await call(`/api/upload?logbook=${lb}`, "POST", { file: ["tree.html", "text/html", tree] });
+  const [, keptPost] = await call("/api/save", "POST", { logbook: lb, tags: [],
+    html: `<p>kept offline</p><figure class="image"><img src="${img2.url}"></figure><p><a href="${plot2.url}">tree.html</a></p>` });
+  const lbName = await page.evaluate(() => state.logbook.name);
+  const keptText = () => page.locator("#offline-dialog li", { hasText: lbName }).locator(".of-kept").textContent();
+  await page.click("#offline-button");
+  await page.waitForSelector("#offline-dialog li input[type=checkbox]");
+  await page.evaluate(() => { ScilogBrowser.offline.large = 1; });  // so that this small copy counts as a large one
+  await page.locator("#offline-dialog li", { hasText: lbName }).locator("input").check();
+  await page.click("#offline-dialog .of-foot button.primary");
+  await page.waitForSelector("#offline-dialog .of-ask", { timeout: 60000 });
+  const question = await page.locator("#offline-dialog .of-ask").textContent();
+  check(/large/.test(question) && /really intended/.test(question), "a large copy is asked about before it is made");
+  await page.click('#offline-dialog .of-ask button:has-text("Only the text")');
+  await page.waitForFunction((name) => /text only/.test([...document.querySelectorAll("#offline-dialog li")].find((li) => li.textContent.includes(name))
+    ?.querySelector(".of-kept")?.textContent || ""), lbName, { timeout: 60000 });
+  let kept = await page.evaluate(() => ScilogBrowser.offline.summary());
+  check(kept.length === 1 && !kept[0].withFiles && kept[0].posts > 20, `a logbook is kept as text only (${await keptText()})`);
+  await page.evaluate(() => { ScilogBrowser.offline.large = 500 * 2 ** 20; });
+  await page.click("#offline-dialog .of-foot button.primary");  // the checked one again, now with its files
+  await page.waitForFunction((name) => / files /.test([...document.querySelectorAll("#offline-dialog li")].find((li) => li.textContent.includes(name))
+    ?.querySelector(".of-kept")?.textContent || ""), lbName, { timeout: 120000 });
+  kept = await page.evaluate(() => ScilogBrowser.offline.summary());
+  check(kept[0].withFiles && kept[0].files >= 2 && kept[0].bytes > 0, `and with its images and attachments (${await keptText()})`);
+  await page.click('#offline-dialog .of-foot button:has-text("Close")');
+
   const [st8, after] = await call("/api/token/forget", "POST", {});
   const left = await page.evaluate(() => Object.keys(localStorage).filter((k) => /token/.test(k)));
-  check(st8 === 200 && !after.ok && left.length === 0, "the token can be forgotten in this browser");
+  check(st8 === 200 && left.length === 0 && after.offline, "the token can be forgotten in this browser");
+
+  const readKept = async (what) => {
+    await page.reload();
+    await page.waitForSelector(`#p-${keptPost.id}`, { timeout: 20000 });
+    const post = page.locator(`#p-${keptPost.id}`);
+    await post.scrollIntoViewIfNeeded();
+    const width = await post.evaluate(async (p) => {
+      const img = p.querySelector("img");
+      await new Promise((r) => (img.complete ? r() : (img.addEventListener("load", r, { once: true }), img.addEventListener("error", r, { once: true }))));
+      return img.naturalWidth;
+    });
+    await post.locator(".plot button").click();
+    const summary = await page.frameLocator(`#p-${keptPost.id} .plot iframe`).locator("summary").textContent({ timeout: 10000 });
+    const badgeText = await page.locator("#token-badge").textContent();
+    const composer = await page.locator("#composer").textContent();
+    check(width > 0 && summary === "scan_4217" && /Offline/.test(badgeText) && /offline copy/.test(composer),
+      `the kept logbook is read ${what}, with its images and plots, and not written to`);
+  };
+  await readKept("without a token");
+  process.kill(Number(apiPid));
+  process.kill(Number(sitePid));
+  await new Promise((r) => setTimeout(r, 800));
+  await readKept("with neither SciLog nor the web site reachable");
+  problems.splice(0, problems.length, ...problems.filter((p) => !/Failed to load resource|ERR_CONNECTION_REFUSED/.test(p)));
   check(problems.length === 0, `no errors in the page${problems.length ? `: ${problems.join(" | ")}` : ""}`);
 } finally {
   await browser.close();

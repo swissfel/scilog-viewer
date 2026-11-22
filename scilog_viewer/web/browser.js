@@ -528,6 +528,244 @@
     return payload;
   }
 
+  // -- offline copies --------------------------------------------------------------------------
+  //
+  // Logbooks kept in this browser to be read later without a network and without a token:
+  // their posts (as SciLog has them, comments included), tasks, and -- if asked for -- their
+  // images and attachments. IndexedDB "scilog-viewer-offline": "books" (one record per
+  // logbook), "files" (id -> {type, name, size, blob} or, kept in a folder, without the blob),
+  // "meta" (settings, the folder's handle). A folder (the File System Access API: Chrome and
+  // Edge on a computer) holds the files where the browser's storage would be too small; the
+  // service worker asks the page for those, since only the page may ask for the folder's
+  // permission again after a restart.
+
+  const OFFLINE_DB = "scilog-viewer-offline";
+  //: a copy this large is only made after asking (bytes); so is one larger than half the free space
+  const OFFLINE_LARGE = 500 * 2 ** 20;
+  //: copies older than this are brought up to date when the viewer is online with a token (ms)
+  const OFFLINE_STALE = 6 * 3600 * 1000;
+
+  function idbOpen() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(OFFLINE_DB, 2);  // 2: never the empty one an older worker might have left
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        for (const name of ["books", "files"]) if (!db.objectStoreNames.contains(name)) db.createObjectStore(name, { keyPath: "id" });
+        if (!db.objectStoreNames.contains("meta")) db.createObjectStore("meta");
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+  let idbPromise = null;
+  const idb = () => (idbPromise = idbPromise || idbOpen().catch((e) => { idbPromise = null; throw e; }));
+  async function idbDo(store, mode, fn) {
+    const db = await idb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(store, mode);
+      let out;
+      Promise.resolve(fn(tx.objectStore(store))).then((r) => { out = r; });
+      tx.oncomplete = () => resolve(out);
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error("aborted"));
+    });
+  }
+  const req2p = (req) => new Promise((resolve, reject) => { req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error); });
+  const idbGet = (store, key) => idbDo(store, "readonly", (s) => req2p(s.get(key)));
+  const idbAll = (store) => idbDo(store, "readonly", (s) => req2p(s.getAll()));
+  const idbPut = (store, value, key) => idbDo(store, "readwrite", (s) => { key === undefined ? s.put(value) : s.put(value, key); });
+  const idbDelete = (store, key) => idbDo(store, "readwrite", (s) => { s.delete(key); });
+
+  const fileIdsOf = (raws) => {
+    const ids = new Set();
+    for (const r of raws) for (const x of [r, ...(r.subsnippets || [])]) for (const f of x.files || []) if (f.fileId) ids.add(f.fileId);
+    return [...ids];
+  };
+
+  const Offline = {
+    supported: typeof indexedDB !== "undefined",
+    large: OFFLINE_LARGE,
+    folderSupported: typeof window.showDirectoryPicker === "function",
+
+    async books() { try { return await idbAll("books"); } catch (e) { return []; } },
+    async count() { try { return await idbDo("books", "readonly", (st) => req2p(st.count())); } catch (e) { return 0; } },
+    async book(id) { try { return await idbGet("books", id); } catch (e) { return null; } },
+
+    async setting(key, fallback) { try { const v = await idbGet("meta", key); return v === undefined ? fallback : v; } catch (e) { return fallback; } },
+    async set(key, value) { await idbPut("meta", value, key); },
+
+    /** What is kept, for the panel: per logbook its name, when, how many posts and files, how large. */
+    async summary() {
+      return (await this.books()).map((b) => ({ id: b.id, name: b.logbook.name, pgroup: b.logbook.pgroup, location: b.logbook.location,
+        saved: b.saved, posts: b.raw.length, files: b.fileIds.length, withFiles: b.withFiles, bytes: b.bytes, where: b.where }));
+    },
+
+    async storage() {
+      const out = { usage: null, quota: null, persisted: null };
+      try { Object.assign(out, await navigator.storage.estimate()); } catch (e) { /* not told */ }
+      try { out.persisted = await navigator.storage.persisted(); } catch (e) { /* not told */ }
+      return out;
+    },
+
+    // -- the folder
+
+    async folder() { return this.folderSupported ? this.setting("folder", null) : null; },
+    async folderState() {
+      const handle = await this.folder();
+      if (!handle) return { supported: this.folderSupported, name: null, permission: null };
+      let permission = "prompt";
+      try { permission = await handle.queryPermission({ mode: "readwrite" }); } catch (e) { /* gone */ }
+      return { supported: true, name: handle.name, permission };
+    },
+    /** Choose the folder (in a click: the browser asks). */
+    async chooseFolder() {
+      const handle = await window.showDirectoryPicker({ id: "scilog-viewer-offline", mode: "readwrite" });
+      await this.set("folder", handle);
+      return this.folderState();
+    },
+    /** Allow the folder again after the browser was restarted (in a click). */
+    async allowFolder() {
+      const handle = await this.folder();
+      if (!handle) throw bad("no folder chosen");
+      return (await handle.requestPermission({ mode: "readwrite" })) === "granted";
+    },
+    async _filesDir(create = true) {
+      const handle = await this.folder();
+      if (!handle) throw bad("no folder chosen for the offline copies");
+      if ((await handle.queryPermission({ mode: "readwrite" })) !== "granted") throw forbidden("the browser needs your permission for the offline copies' folder again");
+      return handle.getDirectoryHandle("scilog-viewer-files", { create });
+    },
+
+    /** A kept file: {type, name, blob} or null. */
+    async file(id) {
+      const rec = await idbGet("files", id).catch(() => null);
+      if (!rec) return null;
+      if (rec.blob) return rec;
+      try {
+        const dir = await this._filesDir(false);
+        const blob = await (await dir.getFileHandle(id)).getFile();
+        return { ...rec, blob };
+      } catch (e) { return null; }
+    },
+
+    async _keepFile(id, blob, type, name, where) {
+      if (where === "folder") {
+        const dir = await this._filesDir();
+        const writable = await (await dir.getFileHandle(id, { create: true })).createWritable();
+        await writable.write(blob);
+        await writable.close();
+        await idbPut("files", { id, type, name, size: blob.size, where });
+      } else await idbPut("files", { id, type, name, size: blob.size, where, blob });
+    },
+
+    async _dropFile(id) {
+      const rec = await idbGet("files", id).catch(() => null);
+      if (rec && rec.where === "folder") {
+        try { await (await this._filesDir(false)).removeEntry(id); } catch (e) { /* gone already */ }
+      }
+      await idbDelete("files", id);
+    },
+
+    // -- making copies
+
+    /** Read what the chosen logbooks hold (their posts now; their files' sizes estimated from a few),
+     *  for the panel to say how large the copies would be before any is made. */
+    async plan(reader, logbooks, withFiles, progress = () => {}) {
+      const books = [];
+      let sampled = 0, sampleBytes = 0;
+      for (const [i, lb] of logbooks.entries()) {
+        progress(`Reading ${lb.name} (${i + 1} of ${logbooks.length}) …`);
+        const raw = await reader.posts(lb.id, null, true);
+        let tasks = [];
+        try { tasks = await reader.tasks(lb.id); } catch (e) { /* a copy without them */ }
+        const ids = withFiles ? fileIdsOf(raw) : [];
+        const kept = new Set((await idbAll("files").catch(() => [])).map((f) => f.id));
+        const missing = ids.filter((id) => !kept.has(id));
+        // a few of the files that would be fetched, fetched now (they are kept): their sizes stand for the rest
+        for (const id of missing.slice(0, Math.max(0, 3 - Math.min(3, sampled)))) {
+          const got = await this._fetchFile(reader, id, raw);
+          if (got) { sampled++; sampleBytes += got.blob.size; this._prefetched.set(id, got); }
+        }
+        const jsonBytes = new Blob([JSON.stringify(raw)]).size;
+        books.push({ logbook: lb, raw, tasks, fileIds: ids, missing, jsonBytes });
+      }
+      const missing = books.reduce((n, b) => n + b.missing.length, 0);
+      const avg = sampled ? sampleBytes / sampled : 300 * 1024;
+      const estimate = books.reduce((n, b) => n + b.jsonBytes, 0) + Math.round(avg * missing);
+      return { books, withFiles, missing, estimate, storage: await this.storage() };
+    },
+
+    /** Whether a plan should be asked about first, and why. */
+    tooLarge(plan, where) {
+      const free = plan.storage.quota != null ? plan.storage.quota - (plan.storage.usage || 0) : null;
+      if (plan.estimate > this.large) return `about ${mb(plan.estimate)}`;
+      if (where !== "folder" && free != null && plan.estimate > free / 2) return `about ${mb(plan.estimate)}, more than half of the space this browser has left (${mb(free)})`;
+      return "";
+    },
+
+    _prefetched: new Map(),
+
+    async _fetchFile(reader, id, raws) {
+      const meta = (() => {
+        for (const r of raws) for (const x of [r, ...(r.subsnippets || [])]) for (const f of x.files || []) if (f.fileId === id) return f;
+        return {};
+      })();
+      const isImage = String(meta.fileExtension || "").startsWith("image");
+      const path = isImage ? `/images/${encodeURIComponent(id)}` : `/filesnippet/${encodeURIComponent(id)}/files`;
+      try {
+        const r = await fetch(API + path, { headers: { Authorization: `Bearer ${reader.token}` }, mode: "cors", credentials: "omit" });
+        if (!r.ok) return null;
+        const name = (r.headers.get("content-disposition") || "").match(/filename="?([^";]+)/);
+        return { blob: await r.blob(), type: r.headers.get("content-type") || "application/octet-stream", name: name ? name[1] : "" };
+      } catch (e) { return null; }
+    },
+
+    /** Make (or bring up to date) the copies a plan describes. */
+    async save(reader, plan, where, progress = () => {}) {
+      try { if (navigator.storage?.persist) await navigator.storage.persist(); } catch (e) { /* the browser decides */ }
+      if (where === "folder") await this._filesDir();  // refused here, before anything is fetched, if it cannot be written
+      const done = [];
+      for (const [i, b] of plan.books.entries()) {
+        const label = `${b.logbook.name} (${i + 1} of ${plan.books.length})`;
+        let bytes = b.jsonBytes, n = 0;
+        const queue = [...b.missing];
+        const worker = async () => {
+          while (queue.length) {
+            const id = queue.shift();
+            const got = this._prefetched.get(id) || (await this._fetchFile(reader, id, b.raw));
+            this._prefetched.delete(id);
+            if (got) { await this._keepFile(id, got.blob, got.type, got.name, where); bytes += got.blob.size; }
+            n++;
+            if (n % 5 === 0 || !queue.length) progress(`Keeping ${label}: files ${n} of ${b.missing.length} (${mb(bytes)})`);
+          }
+        };
+        progress(`Keeping ${label} …`);
+        await Promise.all([worker(), worker(), worker(), worker()]);
+        const already = b.fileIds.filter((id) => !b.missing.includes(id));
+        for (const id of already) bytes += (await idbGet("files", id).catch(() => null))?.size || 0;
+        const since = b.raw.reduce((a, r) => maxIso(a, r.updatedAt, r.createdAt, ...(r.subsnippets || []).map((k) => k.updatedAt)), "");
+        await idbPut("books", { id: b.logbook.id, logbook: b.logbook, raw: b.raw, tasks: b.tasks, fileIds: b.fileIds, withFiles: plan.withFiles,
+          where, bytes, since, saved: new Date().toISOString() });
+        done.push(b.logbook.id);
+      }
+      await this._collect();
+      return done;
+    },
+
+    async remove(id) {
+      await idbDelete("books", id);
+      await this._collect();
+    },
+
+    /** Files no copy refers to any more go. */
+    async _collect() {
+      const used = new Set((await this.books()).flatMap((b) => b.fileIds));
+      for (const f of await idbAll("files").catch(() => [])) if (!used.has(f.id)) await this._dropFile(f.id);
+    },
+  };
+
+  const mb = (bytes) => (bytes >= 2 ** 30 ? `${(bytes / 2 ** 30).toFixed(1)} GB` : `${Math.max(0.1, bytes / 2 ** 20).toFixed(1)} MB`);
+
   // -- the store (server.py's Store) ------------------------------------------------------------
 
   const epoch = (iso) => { const t = Date.parse(iso || ""); return Number.isNaN(t) ? 0 : t / 1000; };
@@ -573,7 +811,29 @@
       return out;
     }
 
-    tokenStatus() {
+    /** Whether a token is there that has not run out (SciLog may still refuse it). */
+    usable() {
+      try {
+        const cur = currentToken();
+        const exp = cur && claims(cur.token).exp;
+        return !!cur && !(exp && exp < Date.now() / 1000);
+      } catch (e) { return false; }
+    }
+
+    /** No usable token, but offline copies: read those (and write nothing). */
+    async refreshMode() {
+      this.offlineMode = !this.usable() && (await Offline.count()) > 0;
+      return this.offlineMode;
+    }
+
+    async tokenStatus() {
+      const st = this.liveTokenStatus();
+      if (st.ok || !(await this.refreshMode())) return st;
+      return { ...st, ok: true, offline: true, access: "offline", personal: true, expires: null, token_why: st.why,
+        identity: "the offline copies kept in this browser (no SciLog token)" };
+    }
+
+    liveTokenStatus() {
       const base = { can_set: true, options: this.options() };
       let cur;
       try { cur = currentToken(); } catch (e) { return { ...base, ok: false, why: e.message, must_choose: false }; }
@@ -627,6 +887,10 @@
     // -- who is reading, and may they write
 
     me() {
+      if (this.offlineMode) {
+        return { identity: "Offline copies", email: "", roles: new Set(), writes: false, access: "offline", as_beamline: false,
+          why_not: "this is an offline copy: enter a SciLog token (🔑) to write", write_logbooks: [] };
+      }
       const cur = currentToken();
       if (!cur) throw new TokenError("There is no SciLog token here yet");
       const c = claims(cur.token);
@@ -640,6 +904,7 @@
 
     mayWriteTo(logbookId) {
       const me = this.me();
+      if (!me.writes) return [false, me.why_not];
       if (!me.write_logbooks.includes(logbookId)) return [false, "writing to this logbook is not switched on in this browser"];
       return [true, ""];
     }
@@ -669,9 +934,35 @@
     }
 
     async listLogbooks() {
-      const rows = await this.reader.logbooks();
+      if (this.offlineMode) return this.offlineLogbooks();
+      let rows;
+      try { rows = await this.reader.logbooks(); } catch (e) {
+        if (e.status === 502 && (await Offline.count())) { this.unreachable = true; return this.offlineLogbooks(); }
+        throw e;
+      }
+      this.unreachable = false;
       for (const lb of rows) lb.url = `${CONFIG.web}/logbooks/${lb.id}/dashboard`;
       return rows;
+    }
+
+    /** The logbooks kept offline, as the list of logbooks. */
+    async offlineLogbooks() {
+      return (await Offline.books()).map((b) => ({ ...b.logbook, offline: true, url: `${CONFIG.web}/logbooks/${b.id}/dashboard` }))
+        .sort((a, b) => (a.touched < b.touched ? 1 : a.touched > b.touched ? -1 : 0));
+    }
+
+    /** A logbook from its offline copy, as posts() returns it; null without a copy. */
+    async postsOffline(logbookId, since) {
+      const held = this.logbooks[logbookId];
+      if (since != null && held) return { posts: [], removed: [], since: held.since, from: held.from, whole: true };
+      const copy = await Offline.book(logbookId);
+      if (!copy) return null;
+      const book = this.logbooks[logbookId] = { posts: {}, raw: {}, since: copy.since, from: "", whole: true, offline: true };
+      for (const r of copy.raw) if (!r.deleted) book.raw[r.id] = r;
+      this.linkQuotes(book, Object.values(book.raw));
+      for (const r of Object.values(book.raw)) book.posts[r.id] = this.record(r);
+      book.from = Object.values(book.raw).map((r) => r.createdAt).filter(Boolean).reduce((a, b) => (b < a ? b : a), "9999");
+      return { posts: Object.values(book.posts).sort(inOrder), removed: [], since: book.since, from: book.from, whole: true };
     }
 
     // -- posts
@@ -741,7 +1032,19 @@
 
     posts(logbookId, since = null, newest = null, before = null) {
       // one at a time per logbook, as the server's lock
-      const run = (this.chains[logbookId] || Promise.resolve()).catch(() => {}).then(() => this._posts(logbookId, since, newest, before));
+      const run = (this.chains[logbookId] || Promise.resolve()).catch(() => {}).then(async () => {
+        if (this.offlineMode || this.unreachable) {
+          const kept = await this.postsOffline(logbookId, since);
+          if (kept) return kept;
+        }
+        try { return await this._posts(logbookId, since, newest, before); } catch (e) {
+          if (e.status !== 502) throw e;
+          const kept = await this.postsOffline(logbookId, since);  // no network: the offline copy, if there is one
+          if (!kept) throw e;
+          this.unreachable = true;
+          return kept;
+        }
+      });
       this.chains[logbookId] = run;
       return run;
     }
@@ -832,7 +1135,14 @@
 
     async tasks(logbookId) {
       if (!ID.test(logbookId || "")) throw bad("not a logbook id");
-      const raws = await this.reader.tasks(logbookId);
+      let raws;
+      if (this.offlineMode || this.unreachable) raws = (await Offline.book(logbookId))?.tasks;
+      if (!raws) {
+        try { raws = await this.reader.tasks(logbookId); } catch (e) {
+          raws = e.status === 502 ? (await Offline.book(logbookId))?.tasks : null;
+          if (!raws) throw e;
+        }
+      }
       this.tasksHeld[logbookId] = Object.fromEntries(raws.map((r) => [r.id, r]));
       const records = raws.map((r) => this.taskRecord(r)).sort((a, b) => a.order - b.order || (a.created < b.created ? -1 : a.created > b.created ? 1 : 0));
       return { tasks: records };
@@ -913,6 +1223,7 @@
 
     async views(logbookId) {
       if (!ID.test(logbookId || "")) throw bad("not a logbook id");
+      if (this.offlineMode || this.unreachable) return { views: [], logbooks: [], can_edit: false };
       const lb = await this.reader.logbook(logbookId);
       const parents = [logbookId].concat(ID.test(String(lb.location || "")) ? [lb.location] : []);
       const names = await this.names();
@@ -1083,6 +1394,7 @@
 
   async function route(method, url, body) {
     const p = url.pathname.replace(/^.*?\/api\//, "");
+    await S.refreshMode();
     const q = (k) => url.searchParams.get(k);
     const b = body || {};
     let m;
@@ -1109,6 +1421,7 @@
     } else {
       if (p === "token/set") return S.setToken(String(b.token || ""), !!(b.keep ?? true));
       if (p === "token/forget") return S.forgetToken();
+      if (S.offlineMode && p !== "token/set" && p !== "write-logbook") throw forbidden(S.me().why_not);
       if (p === "access") {
         if (b.kind !== "stored") throw bad("the beamline account is only in the installed viewer and in eco");
         return S.useKept();
@@ -1190,6 +1503,10 @@
     if (!("serviceWorker" in navigator)) { noWorker("no service worker here: images and attachments will not show"); return; }
     navigator.serviceWorker.addEventListener("message", (e) => {
       if (e.data && e.data.want === "auth" && e.ports[0]) e.ports[0].postMessage(auth());
+      if (e.data && e.data.want === "file" && e.ports[0]) {
+        Offline.file(e.data.id).then((f) => e.ports[0].postMessage(f ? { blob: f.blob, type: f.type, name: f.name } : null),
+          () => e.ports[0].postMessage(null));
+      }
     });
     try {
       await navigator.serviceWorker.register(CONFIG.worker || "sw.js");
@@ -1205,5 +1522,42 @@
     } catch (e) { noWorker(`the service worker did not start: ${e}`); }
   })();
 
-  window.ScilogBrowser = { config: CONFIG, store: S, sanitize: (h) => sanitizeTree(h).innerHTML, cleanPost, editorHtml, toScilog, htmlToText };
+  // what the offline panel (offline.js) uses
+  const offlineApi = {
+    supported: Offline.supported,
+    folderSupported: Offline.folderSupported,
+    /** From how many bytes on a copy is asked about first (changeable for a test). */
+    get large() { return Offline.large; },
+    set large(bytes) { Offline.large = bytes; },
+    mb,
+    async state() { await S.refreshMode(); return { offline: S.offlineMode, unreachable: !!S.unreachable, token: S.usable() }; },
+    summary: () => Offline.summary(),
+    storage: () => Offline.storage(),
+    folderState: () => Offline.folderState(),
+    chooseFolder: () => Offline.chooseFolder(),
+    allowFolder: () => Offline.allowFolder(),
+    setting: (k, d) => Offline.setting(k, d),
+    set: (k, v) => Offline.set(k, v),
+    async logbooks() { return S.offlineMode ? S.offlineLogbooks() : S.listLogbooks(); },
+    async plan(logbooks, withFiles, progress) { return Offline.plan(S.reader, logbooks, withFiles, progress); },
+    tooLarge: (plan, where) => Offline.tooLarge(plan, where),
+    async save(plan, where, progress) { const done = await Offline.save(S.reader, plan, where, progress); return done; },
+    async remove(id) { await Offline.remove(id); delete S.logbooks[id]; },
+    /** Bring copies older than OFFLINE_STALE up to date, quietly (online with a token only). */
+    async refreshDue(progress = () => {}) {
+      if (S.offlineMode || !S.usable() || !(await Offline.setting("keepUpdated", true))) return [];
+      const due = (await Offline.books()).filter((b) => Date.now() - Date.parse(b.saved) > OFFLINE_STALE);
+      const done = [];
+      for (const b of due) {
+        if (b.where === "folder" && (await Offline.folderState()).permission !== "granted") continue;
+        try {
+          const plan = await Offline.plan(S.reader, [b.logbook], b.withFiles, progress);
+          done.push(...(await Offline.save(S.reader, plan, b.where, progress)));
+        } catch (e) { console.warn(`the offline copy of ${b.logbook.name} could not be brought up to date`, e); if (e.status === 502 || e.status === 401) break; }
+      }
+      return done;
+    },
+  };
+
+  window.ScilogBrowser = { config: CONFIG, store: S, offline: offlineApi, sanitize: (h) => sanitizeTree(h).innerHTML, cleanPost, editorHtml, toScilog, htmlToText };
 })();

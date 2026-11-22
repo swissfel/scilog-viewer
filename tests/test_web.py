@@ -86,11 +86,12 @@ def test_the_viewer_runs_in_the_browser_alone(tmp_path):
         _wait(api_port, procs[0], timeout=60)
         _wait(site_port, procs[1])
         run = subprocess.run(["node", str(HERE / "test_web.mjs"), f"http://localhost:{site_port}/", str(log),
-                              str(_cases(tmp_path / "cases.json"))],
+                              str(_cases(tmp_path / "cases.json")), str(procs[0].pid), str(procs[1].pid)],
                              capture_output=True, text=True, cwd=HERE, env=dict(os.environ), timeout=180)
         print(run.stdout)
         assert run.returncode == 0, run.stdout + run.stderr
     finally:
-        for p in procs:
-            p.terminate()
+        for p in procs:  # the test stops both itself, to see the viewer offline
+            if p.poll() is None:
+                p.terminate()
             p.wait(timeout=10)
