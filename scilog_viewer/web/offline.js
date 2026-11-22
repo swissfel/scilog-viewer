@@ -137,12 +137,17 @@
       st.offline || st.unreachable ? el("p", { class: "of-bad", text: st.offline
         ? "Reading offline now (no SciLog token): copies can be removed here, and made or brought up to date with a token and a network."
         : "SciLog cannot be reached now: copies can be removed here, and made or brought up to date once it can." }) : null,
+      O.viaSite ? el("fieldset", {}, el("legend", { text: "Where" }),
+        el("p", { class: "of-muted" }, "Kept by the offline viewer at ", el("a", { href: O.site, target: "_blank", rel: "noopener", text: O.site }),
+          ", in this browser: open it there later — without a network and without logging in. (Or click the 🔖 bookmark anywhere but on a logged-in SciLog.) "
+          + "Keeping them opens that page in a window for a moment.")) :
       el("fieldset", {}, el("legend", { text: "Where" }),
         el("label", {}, where.browser, ` In this browser${storage.usage != null ? ` — ${mb(storage.usage)} used, ${free != null ? `${mb(free)} free` : ""}` : ""}${storage.persisted ? " (kept: the browser does not clear it by itself)" : ""}`),
         el("label", {}, where.folder, " ", folderLabel, " ", folderTools)),
       el("fieldset", {}, el("legend", { text: "What" }),
         el("label", {}, withFiles, " With images and attachments (interactive plots included)"),
-        el("label", {}, updated, " Bring the copies up to date by themselves when online with a token (every few hours)")),
+        O.viaSite ? el("span", { class: "of-muted", text: "To bring them up to date, keep them again here (checked ones are updated)." })
+          : el("label", {}, updated, " Bring the copies up to date by themselves when online with a token (every few hours)")),
       el("div", { class: "of-tools" }, filter,
         el("button", { onclick: () => setVisible(true), ...(canMake ? {} : { disabled: "" }) }, "All"),
         el("button", { onclick: () => setVisible(false) }, "None")),
@@ -163,17 +168,22 @@
       const keep = rows.filter((r) => r.box.checked).map((r) => r.book);
       const drop = rows.filter((r) => !r.box.checked && keptBy[r.book.id]).map((r) => r.book);
       if (drop.length && !confirm(`Remove the offline ${drop.length === 1 ? "copy" : "copies"} of ${drop.map((b) => b.name).join(", ")}?`)) return;
-      busy = true; save.disabled = true;
       const progress = (text) => { status.textContent = text; };
+      if (O.viaSite) {  // the site's window: opened in the click, or the browser blocks it
+        try { O.openSite(); } catch (e) { progress(e.message); status.classList.add("of-bad"); return; }
+        progress("Opening the offline viewer's window …");
+      }
+      busy = true; save.disabled = true;
       try {
         for (const b of drop) { progress(`Removing ${b.name} …`); await O.remove(b.id); }
         if (keep.length && canMake) {
-          let place = where.folder.checked ? "folder" : "browser";
+          let place = !O.viaSite && where.folder.checked ? "folder" : "browser";
           let plan = await O.plan(keep, withFiles.checked, progress);
           const why = O.tooLarge(plan, place);
           if (why) {
             progress("");
-            const choice = await ask(body, plan, why, place, free);
+            const room = plan.storage?.quota != null ? plan.storage.quota - (plan.storage.usage || 0) : free;
+            const choice = await ask(body, plan, why, place, room);
             if (choice === "cancel") { progress("Nothing kept."); return; }
             if (choice === "text") plan = await O.plan(keep, false, progress);
             if (choice === "folder") {

@@ -79,7 +79,9 @@ live:
 the site then says): a bookmark loads the viewer from the site into the SciLog page you are logged in to. It reads
 SciLog there on SciLog's own origin with SciLog's own login, so there is no token to copy and CORS does not apply.
 The token window has the bookmark ("Or: the viewer inside SciLog's own page"): drag it to the bookmarks bar, open
-SciLog, log in, click it. Offline copies need the site itself and are not there. (`inject.js`, written by
+SciLog, log in, click it. Logbooks kept offline from there (📴) are handed to the site in a window it opens, and
+kept by the site: the same bookmark, clicked anywhere but on a logged-in SciLog (or without a network), opens the
+site with them, read-only, without a login. (`inject.js`, written by
 `tools/build_web.py`; `tests/test_web_scilog.py` runs it against a stand-in SciLog without CORS.)
 
 **Offline copies** (📴 in the bar): check logbooks in a list (or all of them) to keep them in the browser, to read

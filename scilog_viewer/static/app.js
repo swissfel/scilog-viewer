@@ -1505,7 +1505,8 @@ function tokenGuide() {
 // no token to copy, and no CORS -- for when SciLog does not let the viewer's own site call it.
 function scilogBookmarkCard() {
   const base = new URL(".", location.href.split("#")[0]).href;
-  const code = `javascript:(()=>{const s=document.createElement('script');s.src='${base}inject.js?'+Date.now();document.body.appendChild(s)})()`;
+  // anywhere but a logged-in SciLog, and without a network (the script cannot load), it opens this site: the offline viewer
+  const code = `javascript:(()=>{const b='${base}',s=document.createElement('script');s.src=b+'inject.js?'+Date.now();s.onerror=()=>{location.href=b};document.body.appendChild(s)})()`;
   const link = el("a", { href: code, class: "tk-bookmarklet", title: "Drag this to your bookmarks bar", onclick: (e) => e.preventDefault() }, "🔖 SciLog viewer");
   const copy = el("button", { onclick: async () => {
     try { await navigator.clipboard.writeText(code); copy.textContent = "Copied"; } catch (e) { copy.textContent = "Select and copy it"; }
@@ -1518,7 +1519,7 @@ function scilogBookmarkCard() {
         el("code", { class: "tk-code", text: code.slice(0, 60) + " …" }), " ", copy),
       el("li", { text: "Open SciLog (scilog.psi.ch) and log in as usual." }),
       el("li", { text: "Click the bookmark (on a phone: type its name in the address bar and choose it). The viewer opens in that page and reads SciLog with your login there." })),
-    el("p", { class: "tk-safe", text: "It loads the viewer from this site into SciLog's page. Offline copies need this site itself, so they are not there." }));
+    el("p", { class: "tk-safe", text: "It loads the viewer from this site into SciLog's page. Logbooks kept offline there (📴) are kept by this site: the same bookmark opens them anywhere but on a logged-in SciLog, also without a network." }));
 }
 
 // Whose SciLog access the viewer uses: the beamline account, a personal token kept here (not on a

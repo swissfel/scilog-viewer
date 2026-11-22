@@ -40,7 +40,8 @@ def test_the_viewer_runs_inside_scilogs_page_where_the_site_may_not_call_it(tmp_
     api_port, site_port = _free_port(), _free_port()
     site = tmp_path / "web"
     subprocess.run([sys.executable, str(ROOT / "tools" / "build_web.py"), "--out", str(site),
-                    "--api", f"http://localhost:{api_port}/api/v1"], check=True, capture_output=True)
+                    "--api", f"http://localhost:{api_port}/api/v1", "--web", f"http://localhost:{api_port}"],
+                   check=True, capture_output=True)
     log = tmp_path / "api.log"
     procs = []
     try:
@@ -68,7 +69,7 @@ def test_the_viewer_runs_inside_scilogs_page_where_the_site_may_not_call_it(tmp_
         post = _api(base, token, "POST", "/basesnippets", body={"snippetType": "paragraph", "linkType": "paragraph",
                                                                 "parentId": book, "textcontent": html, "files": files})["id"]
         run = subprocess.run(["node", str(HERE / "test_web_scilog.mjs"), f"http://localhost:{site_port}/",
-                              f"http://localhost:{api_port}/", str(log), post, str(procs[0].pid)],
+                              f"http://localhost:{api_port}/", str(log), post, str(procs[0].pid), str(procs[1].pid)],
                              capture_output=True, text=True, cwd=HERE, timeout=180)
         print(run.stdout)
         assert run.returncode == 0, run.stdout + run.stderr

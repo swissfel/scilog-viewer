@@ -5,7 +5,7 @@ import fs from "node:fs";
 import { createRequire } from "node:module";
 
 const { chromium } = createRequire(import.meta.url)("playwright");
-const [site, scilog, log, postId, apiPid] = process.argv.slice(2);
+const [site, scilog, log, postId, apiPid, sitePid] = process.argv.slice(2);
 const token = fs.readFileSync(log, "utf8").match(/token: (\S+)/)[1];
 const fail = (msg) => { console.error(msg); process.exit(1); };
 const check = (ok, msg) => { if (!ok) fail(`FAILED: ${msg}`); console.log(`ok: ${msg}`); };
@@ -28,7 +28,8 @@ try {
   const card = page.locator("dialog[open] details", { hasText: "inside SciLog's own page" });
   check(await card.count() === 1, "the token window offers the viewer inside SciLog's own page");
   const bookmark = await card.locator("a.tk-bookmarklet").getAttribute("href");
-  check(bookmark.startsWith("javascript:") && bookmark.includes(`${new URL(site).origin}/inject.js`), "with a bookmark that loads it from this site");
+  check(bookmark.startsWith("javascript:") && bookmark.includes(`b='${site}'`) && bookmark.includes("inject.js") && bookmark.includes("onerror"),
+    "with a bookmark that loads it from this site (and opens this site when it cannot)");
 
   // SciLog's own page, logged in; the bookmark clicked there
   const sl = await context.newPage();
@@ -41,7 +42,6 @@ try {
   await sl.waitForSelector(`#p-${postId}`, { timeout: 20000 });
   const status = await sl.evaluate(() => fetch("/api/token").then((r) => r.json()));
   check(status.ok && /SciLog's own login/.test(status.identity), "inside SciLog's page the viewer reads with SciLog's own login, no token entered");
-  check(await sl.locator("#offline-button").count() === 0, "without the offline panel (it needs the site's own worker)");
   const post = sl.locator(`#p-${postId}`);
   await post.scrollIntoViewIfNeeded();
   const img = await post.evaluate(async (p) => {
@@ -83,6 +83,27 @@ try {
     "stored as SciLog stores an image (named by its hash, not by an address)");
   check(problems.length === 0, `no errors in the pages${problems.length ? `: ${problems.join(" | ")}` : ""}`);
 
+  // offline copies made inside SciLog's page: handed over to the site's window, which keeps them
+  await sl.click("#offline-button");
+  const lbName = await sl.evaluate(() => state.logbook.name);
+  await sl.locator("#offline-dialog li", { hasText: lbName }).locator("input").check();
+  const [receiver] = await Promise.all([context.waitForEvent("page"), sl.click("#offline-dialog .of-foot button.primary")]);
+  await receiver.locator("#receive-box", { hasText: "kept offline here" }).waitFor({ timeout: 60000 });
+  check(new URL(receiver.url()).origin === new URL(site).origin, "keeping a logbook inside SciLog's page hands it to the site's own window");
+  await sl.locator("#offline-dialog li", { hasText: lbName }).locator(".of-kept", { hasText: / files / }).waitFor({ timeout: 30000 });
+  check(true, "and the panel there shows it kept, with its files");
+  // another origin (127.0.0.1 is not localhost) opening the site's window cannot hand it anything
+  const forged = await context.newPage();
+  await forged.goto(scilog.replace("localhost", "127.0.0.1"));
+  await forged.evaluate(async (siteUrl) => {
+    const w = window.open(`${siteUrl}#receive`, "forged");
+    const book = { id: "f".repeat(24), logbook: { id: "f".repeat(24), name: "forged" }, raw: [], fileIds: [] };
+    for (let i = 0; i < 12; i++) {
+      await new Promise((r) => setTimeout(r, 400));
+      try { w.postMessage({ t: "book", seq: i, book }, "*"); w.postMessage({ t: "done", seq: 100 + i }, "*"); } catch (e) { /* loading */ }
+    }
+  }, site);
+
   // no SciLog at all: said as such
   process.kill(Number(apiPid));
   await new Promise((r) => setTimeout(r, 500));
@@ -93,6 +114,32 @@ try {
   await fresh.click('dialog[open] button:has-text("Use this token")');
   const gone = await fresh.locator("dialog[open] .tk-note", { hasText: "Not accepted" }).textContent({ timeout: 20000 });
   check(/cannot be reached/.test(gone) && !/CORS/.test(gone), "a SciLog that is not there at all is said to be unreachable");
+
+  // the kept logbook on the site: without a login, then without any network, opened by the same bookmark
+  const readKept = async (pg, what) => {
+    await pg.waitForSelector(`#p-${postId}`, { timeout: 20000 });
+    const post = pg.locator(`#p-${postId}`);
+    await post.scrollIntoViewIfNeeded();
+    const width = await post.evaluate(async (p) => {
+      const i = p.querySelector("img");
+      await new Promise((r) => (i.complete ? r() : (i.addEventListener("load", r, { once: true }), i.addEventListener("error", r, { once: true }))));
+      return i.naturalWidth;
+    });
+    const badge = await pg.locator("#token-badge").textContent();
+    check(width > 0 && /Offline/.test(badge), `the site shows the kept logbook ${what}, with its images`);
+  };
+  const off = await context.newPage();
+  await off.goto(`${site}#lb=${lb}`);
+  await readKept(off, "without a SciLog login");
+  const names = await off.evaluate(async () => (await ScilogBrowser.offline.summary()).map((k) => k.name));
+  check(names.length === 1 && names[0] === lbName, "and nothing another origin tried to hand it");
+  process.kill(Number(sitePid));
+  await new Promise((r) => setTimeout(r, 500));
+  const blank = await context.newPage();
+  await blank.goto("about:blank");
+  await Promise.all([blank.waitForURL((u) => u.href.startsWith(site), { timeout: 20000 }),
+    blank.evaluate((code) => { (0, eval)(decodeURIComponent(code.slice("javascript:".length))); }, bookmark)]);
+  await readKept(blank, "from the bookmark with neither SciLog nor the site reachable");
 } finally {
   await browser.close();
 }

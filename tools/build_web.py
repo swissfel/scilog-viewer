@@ -67,24 +67,26 @@ def _version(path):
 
 
 INJECT = """// The SciLog viewer inside SciLog's own page: loaded by the bookmark
-//   javascript:(()=>{const s=document.createElement('script');s.src='<this site>/inject.js';document.body.appendChild(s)})()
-// on scilog.psi.ch. It writes the viewer (its files from this site) into that page, where it reads SciLog's
-// API on SciLog's own origin with SciLog's own login: no token to copy, and no CORS. Written by tools/build_web.py.
+//   javascript:(()=>{const b='<this site>/',s=document.createElement('script');s.src=b+'inject.js';s.onerror=()=>{location.href=b};document.body.appendChild(s)})()
+// On a logged-in SciLog it writes the viewer (its files from this site) into that page, where it reads SciLog's
+// API on SciLog's own origin with SciLog's own login: no token to copy, and no CORS. Anywhere else -- and, by the
+// bookmark's onerror, without a network -- it opens this site: the offline viewer. Written by tools/build_web.py.
 (() => {
   "use strict";
   if (window.ScilogBrowser) return;  // already here
-  if (!localStorage.getItem("id_token")) {
-    alert("SciLog viewer: log in to SciLog in this tab first, then click the bookmark again.");
+  const BASE = new URL(".", document.currentScript.src).href;
+  // anywhere but a logged-in SciLog: the offline viewer (the copies kept on this site)
+  if (location.origin !== __SCILOG_ORIGIN__ || !localStorage.getItem("id_token")) {
+    location.href = BASE;
     return;
   }
-  const BASE = new URL(".", document.currentScript.src).href;
   const at = (path) => new URL(path, BASE).href;
-  const config = { api: location.origin + "/api/v1", web: location.origin, files: "api", tokenFrom: "scilog", worker: false };
-  const styles = STYLES.map((p) => `<link rel="stylesheet" href="${at(p)}">`).join("");
+  const config = { api: location.origin + "/api/v1", web: location.origin, files: "api", tokenFrom: "scilog", worker: false, site: BASE };
+  const styles = __STYLES__.map((p) => `<link rel="stylesheet" href="${at(p)}">`).join("");
   document.open();
   document.write(`<!doctype html><html lang="en"><head><meta charset="utf-8">`
     + `<meta name="viewport" content="width=device-width, initial-scale=1"><title>SciLog viewer</title>${styles}</head>`
-    + `<body>${BODY}</body></html>`);
+    + `<body>${__BODY__}</body></html>`);
   document.close();
   // The scripts are added, not written in: a page with a strict script policy ('strict-dynamic', as a
   // production site may have) runs scripts a script adds, but none written into the page. One after
@@ -98,7 +100,7 @@ INJECT = """// The SciLog viewer inside SciLog's own page: loaded by the bookmar
     s.onerror = () => reject(new Error(`${path} could not be loaded`));
     document.body.appendChild(s);
   });
-  SCRIPTS.reduce((before, path) => before.then(() => add(path)), Promise.resolve())
+  __SCRIPTS__.reduce((before, path) => before.then(() => add(path)), Promise.resolve())
     .then(() => window.scilogStart())
     .catch((e) => {
       const flow = document.getElementById("flow");
@@ -108,14 +110,14 @@ INJECT = """// The SciLog viewer inside SciLog's own page: loaded by the bookmar
 """
 
 
-def _inject(page):
-    """inject.js from the built index.html: its body, and its styles and scripts but the config, the
-    offline panel (it needs the site's own service worker) and the policy (SciLog's page has its own)."""
+def _inject(page, web):
+    """inject.js from the built index.html: its body, and its styles and scripts but the config and the
+    policy (SciLog's page has its own); only on SciLog (web) does it start the viewer there."""
     body = re.search(r"<body>(.*?)<script", page, re.S).group(1).strip()
     styles = re.findall(r'<link rel="stylesheet" href="([^"]+)">', page)
-    scripts = [s for s in re.findall(r'<script src="([^"]+)"></script>', page) if not s.startswith(("config.js", "offline.js"))]
-    return (INJECT.replace("STYLES", json.dumps(styles)).replace("SCRIPTS", json.dumps(scripts))
-            .replace("BODY", json.dumps(body)))
+    scripts = [s for s in re.findall(r'<script src="([^"]+)"></script>', page) if not s.startswith("config.js")]
+    return (INJECT.replace("__SCILOG_ORIGIN__", json.dumps(_origin(web))).replace("__STYLES__", json.dumps(styles))
+            .replace("__SCRIPTS__", json.dumps(scripts)).replace("__BODY__", json.dumps(body)))
 
 
 def build(out, api="https://scilog.psi.ch/api/v1", web="https://scilog.psi.ch", cname=None):
@@ -153,7 +155,7 @@ def build(out, api="https://scilog.psi.ch/api/v1", web="https://scilog.psi.ch", 
     (out / "index.html").write_text(page)
 
     # inject.js: the same page written into SciLog's own page, started from a bookmark there
-    (out / "inject.js").write_text(_inject(page))
+    (out / "inject.js").write_text(_inject(page, web))
 
     # the service worker keeps the site's files, to start without a network (offline copies)
     shell = ["", "index.html", "config.js", "browser.js", "offline.js"] + sorted(

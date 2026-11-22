@@ -620,7 +620,8 @@
   };
 
   const Offline = {
-    supported: typeof indexedDB !== "undefined" && !!CONFIG.worker,  // offline needs the site's own worker
+    // the site's own worker reads the copies; inside SciLog's page they are handed to the site (below)
+    supported: typeof indexedDB !== "undefined" && (!!CONFIG.worker || !!CONFIG.site),
     large: OFFLINE_LARGE,
     folderSupported: typeof window.showDirectoryPicker === "function",
 
@@ -707,7 +708,7 @@
 
     /** Read what the chosen logbooks hold (their posts now; their files' sizes estimated from a few),
      *  for the panel to say how large the copies would be before any is made. */
-    async plan(reader, logbooks, withFiles, progress = () => {}) {
+    async plan(reader, logbooks, withFiles, progress = () => {}, keptIds = null) {
       const books = [];
       let sampled = 0, sampleBytes = 0;
       for (const [i, lb] of logbooks.entries()) {
@@ -716,7 +717,7 @@
         let tasks = [];
         try { tasks = await reader.tasks(lb.id); } catch (e) { /* a copy without them */ }
         const ids = withFiles ? fileIdsOf(raw) : [];
-        const kept = new Set((await idbAll("files").catch(() => [])).map((f) => f.id));
+        const kept = new Set(keptIds || (await idbAll("files").catch(() => [])).map((f) => f.id));
         const missing = ids.filter((id) => !kept.has(id));
         // a few of the files that would be fetched, fetched now (they are kept): their sizes stand for the rest
         for (const id of missing.slice(0, Math.max(0, 3 - Math.min(3, sampled)))) {
@@ -800,6 +801,151 @@
       for (const f of await idbAll("files").catch(() => [])) if (!used.has(f.id)) await this._dropFile(f.id);
     },
   };
+
+  // -- offline copies made inside SciLog's page, kept by the viewer's own site ----------------------
+  //
+  // Inside SciLog's page (the bookmark) SciLog can be read, but the copies must live where the viewer
+  // starts without a network or a login: on its own site, whose storage is its own. So the panel opens
+  // a window of that site (#receive) and hands each file and logbook over to it as a message; that
+  // window keeps them (and accepts messages only from SciLog's origin, only from the window that
+  // opened it). The panel remembers here what was handed over, to show it.
+
+  const SITE = CONFIG.site ? new URL(CONFIG.site).href : null;
+  const KEY_HANDED = "scilog-viewer-handed";  // localStorage on SciLog's origin: the summary the site last gave
+
+  const Handover = {
+    win: null,
+    origin: SITE ? new URL(SITE).origin : null,
+    seq: 0,
+    waits: new Map(),
+    ready: null,
+    /** Open the site's receiving window: in the click itself, or the browser blocks it. */
+    open() {
+      if (!SITE) throw bad("the viewer's site is not known here");
+      this.win = window.open(`${SITE}#receive`, "scilog-viewer-offline");
+      if (!this.win) throw bad("the browser blocked the window of the offline viewer: allow pop-ups for SciLog, then try again");
+      this.ready = new Promise((resolve, reject) => {
+        this._ready = resolve;
+        const started = Date.now();
+        const hello = setInterval(() => {  // until it has loaded and answers (a message sent earlier goes nowhere)
+          if (!this.win || this.win.closed || Date.now() - started > 45000) {
+            clearInterval(hello);
+            reject(bad("the offline viewer's window did not open or answer (closed, or no network?)"));
+            return;
+          }
+          try { this.win.postMessage({ t: "hello" }, this.origin); } catch (e) { /* not there yet */ }
+        }, 400);
+        this._stop = () => clearInterval(hello);
+      });
+      return this;
+    },
+    send(message) {
+      const seq = ++this.seq;
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => { this.waits.delete(seq); reject(bad("the offline viewer's window stopped answering (closed?)")); }, 120000);
+        this.waits.set(seq, (d) => { clearTimeout(timer); this.waits.delete(seq); d.error ? reject(bad(`the offline viewer: ${d.error}`)) : resolve(d); });
+        this.win.postMessage({ ...message, seq }, this.origin);
+      });
+    },
+  };
+
+  if (IN_SCILOG) {
+    window.addEventListener("message", (e) => {
+      if (e.origin !== Handover.origin || !Handover.win || e.source !== Handover.win) return;
+      const d = e.data || {};
+      if (d.t === "ready" && Handover._ready) { Handover._stop(); Handover._ready(d); Handover._ready = null; }
+      else if (d.t === "ack") Handover.waits.get(d.seq)?.(d);
+    });
+  }
+
+  const handed = () => { try { return JSON.parse(get("localStorage", KEY_HANDED) || "[]"); } catch (e) { return []; } };
+  const setHanded = (summary) => put("localStorage", KEY_HANDED, JSON.stringify(summary || []));
+
+  /** Hand the copies a plan describes over to the site's window: each logbook's files first, then the logbook. */
+  async function handOver(reader, plan, progress) {
+    for (const [i, b] of plan.books.entries()) {
+      const label = `${b.logbook.name} (${i + 1} of ${plan.books.length})`;
+      let bytes = b.jsonBytes, n = 0;
+      for (const id of b.missing) {
+        const got = Offline._prefetched.get(id) || (await Offline._fetchFile(reader, id, b.raw));
+        Offline._prefetched.delete(id);
+        if (got) { await Handover.send({ t: "file", id, blob: got.blob, type: got.type, name: got.name }); bytes += got.blob.size; }
+        n++;
+        if (n % 5 === 0 || n === b.missing.length) progress(`Handing ${label} to the offline viewer: files ${n} of ${b.missing.length} (${mb(bytes)})`);
+      }
+      progress(`Handing ${label} to the offline viewer …`);
+      const since = b.raw.reduce((a, r) => maxIso(a, r.updatedAt, r.createdAt, ...(r.subsnippets || []).map((k) => k.updatedAt)), "");
+      await Handover.send({ t: "book", book: { id: b.logbook.id, logbook: b.logbook, raw: b.raw, tasks: b.tasks, fileIds: b.fileIds,
+        withFiles: plan.withFiles, jsonBytes: b.jsonBytes, since, saved: new Date().toISOString() } });
+    }
+    const done = await Handover.send({ t: "done" });
+    setHanded(done.kept);
+    return plan.books.map((b) => b.logbook.id);
+  }
+
+  /** The site, opened by SciLog's page to receive copies (#receive): it keeps what that page hands over. */
+  function receive() {
+    const from = new URL(CONFIG.web).origin;  // SciLog itself: nothing is taken from anyone else
+    window.SCILOG_DEFER_MAIN = true;          // the viewer itself starts afterwards, on a click
+    const say = el => { const box = document.getElementById("receive-box"); if (box) box.replaceChildren(...el); };
+    const start = () => {
+      const box = document.createElement("div");
+      box.id = "receive-box";
+      box.setAttribute("style", "position:fixed;inset:0;z-index:100;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;background:var(--bg,#fff);color:var(--fg,#111);font:16px/1.5 system-ui,sans-serif;padding:16px;text-align:center");
+      box.textContent = "Waiting for SciLog's page …";
+      document.body.append(box);
+    };
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start); else start();
+    let books = 0, files = 0, asked = false;
+    window.addEventListener("message", async (e) => {
+      if (e.origin !== from || !window.opener || e.source !== window.opener) return;
+      const d = e.data || {};
+      const reply = (x) => e.source.postMessage({ t: "ack", seq: d.seq, ...x }, from);
+      try {
+        if (d.t === "hello") {
+          const kept = await Offline.summary();
+          e.source.postMessage({ t: "ready", storage: await Offline.storage(), kept,
+            fileIds: (await idbAll("files").catch(() => [])).map((f) => f.id) }, from);
+          say([document.createTextNode("Receiving offline copies from SciLog …")]);
+          return;
+        }
+        if (!asked) { asked = true; try { await navigator.storage?.persist?.(); } catch (err) { /* the browser decides */ } }
+        if (d.t === "file") {
+          if (!ID.test(String(d.id)) || !(d.blob instanceof Blob)) throw new Error("not a file");
+          await Offline._keepFile(d.id, d.blob, String(d.type || "application/octet-stream"), String(d.name || ""), "browser");
+          files++;
+          say([document.createTextNode(`Receiving offline copies from SciLog: ${files} files, ${books} logbooks …`)]);
+          return reply({});
+        }
+        if (d.t === "book") {
+          const b = d.book || {};
+          if (!ID.test(String(b.id)) || !Array.isArray(b.raw) || !b.logbook) throw new Error("not a logbook");
+          let bytes = Number(b.jsonBytes) || 0;
+          for (const id of b.fileIds || []) bytes += (await idbGet("files", id).catch(() => null))?.size || 0;
+          await idbPut("books", { id: b.id, logbook: b.logbook, raw: b.raw, tasks: b.tasks || [], fileIds: b.fileIds || [],
+            withFiles: !!b.withFiles, where: "browser", bytes, since: b.since || "", saved: b.saved || new Date().toISOString() });
+          books++;
+          return reply({});
+        }
+        if (d.t === "remove") {
+          if (!ID.test(String(d.id))) throw new Error("not a logbook id");
+          await Offline.remove(d.id);
+          return reply({});
+        }
+        if (d.t === "done") {
+          await Offline._collect();
+          const kept = await Offline.summary();
+          const open = document.createElement("button");
+          open.textContent = "Open the offline viewer";
+          open.setAttribute("style", "font:inherit;padding:8px 16px;border-radius:8px;border:1px solid #888;cursor:pointer");
+          open.onclick = () => { location.hash = ""; location.reload(); };
+          say([document.createTextNode(`${kept.length} ${kept.length === 1 ? "logbook is" : "logbooks are"} kept offline here — readable at this address without a network or a login.`), open]);
+          return reply({ kept });
+        }
+      } catch (err) { reply({ error: err.message || String(err) }); }
+    });
+  }
+  if (!IN_SCILOG && location.hash === "#receive" && window.opener) receive();
 
   const mb = (bytes) => (bytes >= 2 ** 30 ? `${(bytes / 2 ** 30).toFixed(1)} GB` : `${Math.max(0.1, bytes / 2 ** 20).toFixed(1)} MB`);
 
@@ -1611,6 +1757,34 @@
   const barStyle = document.createElement("style");
   barStyle.textContent = "@media (max-width: 1450px) { #status { display: none; } } #tasks-button, #views-button, #new-post { white-space: nowrap; }";
   document.head.append(barStyle);
+
+  if (IN_SCILOG) {
+    Object.assign(offlineApi, {
+      viaSite: true,
+      site: SITE,
+      folderSupported: false,
+      async state() { return { offline: false, unreachable: false, token: S.usable() }; },
+      async summary() { return handed(); },
+      async storage() { return { usage: null, quota: null, persisted: null }; },
+      async folderState() { return { supported: false, name: null, permission: null }; },
+      /** The site's window, opened in the click; what it keeps and how much space it has, once it answers. */
+      openSite() { Handover.open(); return Handover; },
+      async siteReady() { const r = await Handover.ready; setHanded(r.kept); return r; },
+      async plan(logbooks, withFiles, progress) {
+        const r = await this.siteReady();
+        const plan = await Offline.plan(S.reader, logbooks, withFiles, progress, r.fileIds);
+        plan.storage = r.storage || plan.storage;
+        return plan;
+      },
+      async save(plan, where, progress) { return handOver(S.reader, plan, progress); },
+      async remove(id) {
+        await this.siteReady();
+        await Handover.send({ t: "remove", id });
+        setHanded(handed().filter((k) => k.id !== id));
+      },
+      async refreshDue() { return []; },  // brought up to date from the panel (it needs the site's window)
+    });
+  }
 
   window.ScilogBrowser = { config: CONFIG, inScilog: IN_SCILOG, fileUrl, store: S, offline: offlineApi, sanitize: (h) => sanitizeTree(h).innerHTML, cleanPost, editorHtml, toScilog, htmlToText };
 })();
