@@ -51,6 +51,10 @@ These put the viewer in the menu, with its icon, and can be removed again as any
 Either way it opens the viewer in your browser and runs until its window is closed. The icon and the
 packages are made by `packaging/make_icons.py`, `packaging/linux_package.sh` and
 `packaging/windows_setup.iss` -- all of it from `packaging/icon.svg`, the drawing the Android app uses too.
+The app's launcher icons live in `android/app/src/main/res`: the adaptive one a phone draws
+(`mipmap-anydpi-v26/`, with a monochrome layer for Android 13's themed icons) and a plain picture at
+every density for launchers that ask for one. `python packaging/make_icons.py --android` draws those
+again if the icon changes.
 
 **With Python:**
 

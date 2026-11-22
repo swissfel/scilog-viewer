@@ -1,10 +1,17 @@
 """The icon of packaging/icon.svg as the files a desktop package and a Windows program need:
 
     python packaging/make_icons.py build/icons      # PNGs 16..512, scilog-viewer.ico
+    python packaging/make_icons.py --android        # the Android launcher's own PNGs
 
 An open logbook, the same drawing as the Android launcher. It is drawn here rather than
 read from the SVG so that building needs nothing but Python: the shapes are filled at
 1024 and averaged down to each size, which is where the smooth edges come from.
+
+--android writes the raster launcher icons into android/app/src/main/res: a phone on
+Android 8 or later draws the adaptive icon (mipmap-anydpi-v26/) instead, but a launcher
+that asks for a plain picture -- and anything showing the app outside the home screen --
+then has one at its own density rather than nothing at all. They are checked in, so
+building the app needs no Python; run this again if the drawing changes.
 """
 
 import struct
@@ -23,6 +30,8 @@ LINES = [((35, 46), (47, 48)), ((35, 52), (47, 54)), ((35, 58), (47, 60)),
          ((61, 48), (73, 46)), ((61, 54), (73, 52)), ((61, 60), (73, 58))]
 GROW = 1.3                         # a desktop icon has no safe zone to keep clear of
 RADIUS = 19 / 108                  # the rounded corner, as a part of the width
+#: the five densities an Android launcher looks for, in pixels
+DENSITIES = {"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192}
 
 
 class Sheet:
@@ -117,11 +126,11 @@ class Sheet:
         return head + bytes(pixels) + bytes(mask_row * self.size)
 
 
-def draw():
-    """The icon at MASTER."""
+def draw(round=False):
+    """The icon at MASTER; round for the circle some Android launchers ask for."""
     sheet = Sheet(MASTER)
     unit = MASTER / 108
-    sheet.rounded_square(RADIUS * MASTER, BLUE)
+    sheet.rounded_square(MASTER / 2 if round else RADIUS * MASTER, BLUE)
     place = lambda p: ((54 + (p[0] - 54) * GROW) * unit, (54 + (p[1] - 54) * GROW) * unit)
     for page in PAGES:
         sheet.polygon([place(p) for p in page], WHITE)
@@ -141,6 +150,19 @@ def ico(sheets):
     return struct.pack("<HHH", 0, 1, len(sheets)) + b"".join(entries) + b"".join(blobs)
 
 
+def android(res):
+    """The launcher's raster icons: mipmap-<density>/ic_launcher{,_round}.png."""
+    res = Path(res)
+    for name, round in (("ic_launcher", False), ("ic_launcher_round", True)):
+        master = draw(round)
+        for density, size in DENSITIES.items():
+            folder = res / f"mipmap-{density}"
+            folder.mkdir(parents=True, exist_ok=True)
+            sheet = master if size == MASTER else master.shrink_to(size)
+            (folder / f"{name}.png").write_bytes(sheet.png())
+    print(f"{2 * len(DENSITIES)} launcher PNGs in {res}")
+
+
 def main(where):
     where = Path(where)
     where.mkdir(parents=True, exist_ok=True)
@@ -155,4 +177,9 @@ def main(where):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else "build/icons")
+    argv = sys.argv[1:]
+    if argv and argv[0] == "--android":
+        here = Path(__file__).resolve().parent.parent
+        android(argv[1] if len(argv) > 1 else here / "android/app/src/main/res")
+    else:
+        main(argv[0] if argv else "build/icons")
