@@ -30,15 +30,9 @@ jobs:
       - run: pip install ".[dev]"
       - run: npm install --no-save playwright@1.63.0 && npx playwright install --with-deps chromium
       - run: pytest -q -s tests/test_web.py
-  deploy:
+  site:
     needs: test
     runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -56,5 +50,17 @@ jobs:
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with: { path: site }
+  # in a job of its own, as GitHub's own example has it: the site's artifact is complete
+  # when this starts (deploying right after uploading, in the same job, can miss it)
+  deploy:
+    needs: site
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - id: deployment
         uses: actions/deploy-pages@v4
