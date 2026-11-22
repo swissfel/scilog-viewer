@@ -12,8 +12,39 @@ import time
 
 import pytest
 
+from scilog_viewer import content
+
 HERE = pathlib.Path(__file__).parent
 ROOT = HERE.parent
+
+
+#: what a post's HTML could try: none of it may survive the cleaning, in Python or in the browser
+HOSTILE = [
+    '<img src=x onerror=alert(1)>', '<a href="javascript:alert(1)">j</a>', '<a href=" jav&#x09;ascript:alert(1)">j</a>',
+    '<a href="JaVaScRiPt:alert(1)">j</a>', '<svg><script>alert(1)</script><a xlink:href="javascript:alert(1)">s</a></svg>x',
+    '<style>body{display:none}</style><p>v</p>', '<iframe src="https://evil"></iframe><object data=x></object><embed src=x>',
+    '<div onclick="alert(1)" style="width:50%;position:fixed;background:url(x)">d</div>', '<form action=x><input value=y></form>t',
+    '<math><mtext><img src=x onerror=alert(1)></mtext></math>', '<a href="data:text/html,<script>alert(1)</script>">d</a>',
+    '<table><tr><td colspan=2 onmouseover=x>t</td></tr></table>', '<p><!-- c -->text</p>',
+]
+FILES = [{"fileHash": "H1", "fileId": "a" * 24, "style": {"width": "300px"}},
+         {"fileHash": "H2", "fileId": "b" * 24, "fileExtension": "file/json"},
+         {"fileHash": "H3", "fileId": "c" * 24, "fileExtension": "file/html"}]
+POSTS = [
+    '<figure class="image image_resized" style="width:50%"><img src="" title="H1" width="600" height="300" style="aspect-ratio:600/300"></figure>',
+    '<figure class="image"><img src="" title="H1"></figure><p>an image SciLog sized in its file</p><img src="" title="nope">',
+    '<p><a class="fileLink" href="file:H2">d.json</a>, <a href="file:H3">plot.html</a> and <a href="file:gone">gone</a></p>',
+    '<h2>Head</h2><ul><li><b>b</b> <i>i</i> <u>u</u> <s>s</s> <sub>2</sub> <code>c</code></li></ul><blockquote>q</blockquote>',
+    '<p style="text-align:center;color:#333">c</p><img src="https://example.org/x.png" alt="outside">',
+]
+
+
+def _cases(path):
+    """What the Python side makes of each, for the page to compare its own with."""
+    cases = [{"text": t, "files": FILES, "clean": content.clean_post(t, FILES), "editor": content.editor_html(t, FILES),
+              "hostile": t in HOSTILE} for t in HOSTILE + POSTS]
+    path.write_text(__import__("json").dumps(cases))
+    return path
 
 
 def _free_port():
@@ -54,8 +85,10 @@ def test_the_viewer_runs_in_the_browser_alone(tmp_path):
                                       cwd=site, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         _wait(api_port, procs[0], timeout=60)
         _wait(site_port, procs[1])
-        run = subprocess.run(["node", str(HERE / "test_web.mjs"), f"http://localhost:{site_port}/", str(log)],
+        run = subprocess.run(["node", str(HERE / "test_web.mjs"), f"http://localhost:{site_port}/", str(log),
+                              str(_cases(tmp_path / "cases.json"))],
                              capture_output=True, text=True, cwd=HERE, env=dict(os.environ), timeout=180)
+        print(run.stdout)
         assert run.returncode == 0, run.stdout + run.stderr
     finally:
         for p in procs:

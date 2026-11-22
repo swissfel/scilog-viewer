@@ -366,12 +366,14 @@ function runPlot(span, id) {
   // its own origin (the server sends CSP sandbox): no cookie, no access to this page
   const frame = el("iframe", { src: `file/${id}`, sandbox: "allow-scripts", loading: "lazy", title: span.dataset.name || "plot" });
   if (window.ScilogBrowser) {
-    // in the browser-only viewer the plot comes from its service worker, which a sandboxed frame does not go
-    // through: fetched here and given to the frame as its document, which stays in an origin of its own
-    frame.removeAttribute("src");
-    fetch(`file/${id}`).then((r) => (r.ok ? r.text() : Promise.reject(new Error(`${r.status}`))))
-      .then((html) => { frame.srcdoc = html; })
-      .catch((e) => { frame.srcdoc = `<p style="font:14px sans-serif">The plot could not be read (${e.message}).</p>`; });
+    // In the browser-only viewer the plot comes from its service worker, which gives it an origin of its own
+    // (a sandbox header). A sandbox attribute would make the browser skip the worker, so there is none -- and
+    // without a running worker there is no plot rather than one outside a sandbox.
+    if (!navigator.serviceWorker?.controller) {
+      span.append(el("p", { class: "hint", text: "Plots need the viewer's service worker, which this browser does not run here (a private window?)." }));
+      return;
+    }
+    frame.removeAttribute("sandbox");
   }
   span.querySelector("button")?.remove();
   span.append(frame);
@@ -1423,6 +1425,8 @@ function updateTokenBadge() {
   if (t?.access === "temporary") text = `🔑 ${(t.identity || "").split(/[<(]/)[0].trim()}: ${left > 1 / 24 ? `${Math.round(left * 24)} h` : `${Math.max(1, Math.round(left * 1440))} min`} left`;
   else if (t?.access === "beamline" && t.options?.shared) text = "👥 beamline account";
   else if (t?.personal && soon) text = left > 1 ? `🔑 token: ${Math.floor(left)} days left` : left > 0 ? `🔑 token: ${Math.max(1, Math.round(left * 24))} h left` : "🔑 token expired";
+  // the browser-only viewer: always there, so that the token can be forgotten on any screen (on a shared computer)
+  else if (window.ScilogBrowser && t?.ok) text = `🔑 ${(t.identity || "").split(/[<(]/)[0].trim().split(" ")[0] || "token"}`;
   badge.hidden = !text;
   badge.textContent = text;
   badge.title = "Whose SciLog access the viewer uses: click to change";
@@ -1525,6 +1529,12 @@ function openTokenDialog(status = state.token || {}) {
       el("button", { title: "Close", onclick: () => dialog.close() }, "✕")),
     el("div", { class: "tk-body" },
       el("p", { class: status.ok ? "" : "bad", text: current }),
+      // the browser-only viewer: on a shared computer the token must be removable from the page itself
+      window.ScilogBrowser && status.ok ? el("p", {}, el("button", { onclick: async (ev) => {
+        ev.target.disabled = true;
+        try { await writeApi("/api/token/forget", "POST", {}); location.reload(); }
+        catch (e) { note.textContent = `Not forgotten: ${e.message}`; note.classList.add("bad"); ev.target.disabled = false; }
+      } }, "Forget the token in this browser"), el("span", { class: "tk-safe", text: " — do this on a computer others use." })) : null,
       ...cards,
       el("div", { class: "tk-card" },
         el("div", {}, el("strong", { text: "Your own token" }),
@@ -1748,4 +1758,7 @@ function pageBack() {
 }
 window.scilogBack = pageBack;
 
-main();
+// once every script of the page is there (tasks.js, rail.js, ... come after this one): what main() starts
+// can otherwise call into one not loaded yet when SciLog answers quickly
+if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", main, { once: true });
+else main();

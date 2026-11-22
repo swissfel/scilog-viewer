@@ -359,7 +359,8 @@
       link.append(...a.childNodes);
       const isPlot = (f.fileExtension || "").includes("html") || /\.html?$/i.test(plain);
       if (!isPlot) link.className = "attachment";
-      link.setAttribute("href", isPlot ? `file/${f.fileId}` : `file/${f.fileId}?download=1`);
+      // the file's name goes along: SciLog does not let another site read it from its answer
+      link.setAttribute("href", isPlot ? `file/${f.fileId}` : `file/${f.fileId}?download=1&name=${encodeURIComponent(plain.trim())}`);
       link.setAttribute("target", "_blank");
       link.setAttribute("rel", "noopener");
       if (isPlot) {
@@ -600,6 +601,24 @@
         const until = Math.min(exp || Infinity, Date.now() / 1000 + TEMPORARY_HOURS * 3600);
         put("sessionStorage", KEY_TEMP, JSON.stringify({ token: value, until }));
       }
+      this.forget();
+      await giveWorkerToken(true);
+      return this.tokenStatus();
+    }
+
+    /** Remove every token from this browser (both kinds) and the files kept with it. */
+    async forgetToken() {
+      drop("localStorage", KEY_TOKEN);
+      drop("sessionStorage", KEY_TEMP);
+      this.forget();
+      await giveWorkerToken(true);
+      return this.tokenStatus();
+    }
+
+    /** Back from a token lent to this tab to the one kept in this browser. */
+    async useKept() {
+      if (!this.options().stored.available) throw bad("there is no valid token kept in this browser");
+      drop("sessionStorage", KEY_TEMP);
       this.forget();
       await giveWorkerToken(true);
       return this.tokenStatus();
@@ -1089,7 +1108,11 @@
       if (p === "views") return S.views(q("logbook"));
     } else {
       if (p === "token/set") return S.setToken(String(b.token || ""), !!(b.keep ?? true));
-      if (p === "access") throw bad("the beamline account is only in the installed viewer and in eco");
+      if (p === "token/forget") return S.forgetToken();
+      if (p === "access") {
+        if (b.kind !== "stored") throw bad("the beamline account is only in the installed viewer and in eco");
+        return S.useKept();
+      }
       if (p === "write-logbook") return S.setWriteLogbook(b.logbook, !!(b.on ?? true));
       if (p === "upload") {
         const file = body instanceof FormData ? body.get("file") : null;
@@ -1156,8 +1179,15 @@
     if (sw) sw.postMessage({ auth: auth(), forgetFiles });
   }
 
+  // said once in the page, where it can be seen: without the worker there are no images
+  function noWorker(why) {
+    console.warn(why);
+    const say = () => window.toast?.("Images, plots and attachments cannot be shown in this browser window (no service worker; a private window?).");
+    if (document.readyState === "complete") setTimeout(say, 1500); else window.addEventListener("load", () => setTimeout(say, 1500));
+  }
+
   const workerReady = (async () => {
-    if (!("serviceWorker" in navigator)) { console.warn("no service worker here: images and attachments will not show"); return; }
+    if (!("serviceWorker" in navigator)) { noWorker("no service worker here: images and attachments will not show"); return; }
     navigator.serviceWorker.addEventListener("message", (e) => {
       if (e.data && e.data.want === "auth" && e.ports[0]) e.ports[0].postMessage(auth());
     });
@@ -1171,7 +1201,8 @@
         });
       }
       await giveWorkerToken();
-    } catch (e) { console.warn("the service worker did not start: images and attachments will not show", e); }
+      if (!navigator.serviceWorker.controller) noWorker("the service worker does not control this page (a hard reload?)");
+    } catch (e) { noWorker(`the service worker did not start: ${e}`); }
   })();
 
   window.ScilogBrowser = { config: CONFIG, store: S, sanitize: (h) => sanitizeTree(h).innerHTML, cleanPost, editorHtml, toScilog, htmlToText };

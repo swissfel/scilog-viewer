@@ -56,21 +56,31 @@ The app's launcher icons live in `android/app/src/main/res`: the adaptive one a 
 every density for launchers that ask for one. `python packaging/make_icons.py --android` draws those
 again if the icon changes.
 
-**In the browser alone** (a first version, to try): the same page as a web site of plain files, with nothing
-installed and nothing running on your side but the browser. `scilog_viewer/web/browser.js` does in the page what the
-local server does, calling SciLog's API directly (SciLog allows that from any site), and the service worker
-`scilog_viewer/web/sw.js` serves the images and attachments with your token:
+**In the browser alone**: the same page as a web site of plain files, with nothing installed and nothing running on
+your side but the browser. `scilog_viewer/web/browser.js` does in the page what the local server does, calling SciLog's
+API directly (SciLog's API allows that from any site), and the service worker `scilog_viewer/web/sw.js` serves the
+images and attachments with your token:
 
 ```bash
-python tools/build_web.py                     # -> dist/web, for https://scilog.psi.ch
-cd dist/web && python -m http.server 8000     # then open http://localhost:8000
+python tools/build_web.py --cname scilog-viewer.example.org   # -> dist/web, for https://scilog.psi.ch
+cd dist/web && python -m http.server 8000                     # a try on http://localhost:8000
 ```
 
-`.github/workflows/pages.yml` puts it on GitHub Pages. The token is entered in the page as above and kept in that
-browser's storage (or only in the tab, for at most 8 hours); the logbooks you allow writing to are remembered there
-too. Not here: the beamline account (its password cannot be given to a web page) and eco's plugin. To try it without
-SciLog, `python tools/fake_scilog.py` serves the made-up logbook through a stand-in for SciLog's API and prints the
-token it accepts; build with `--api http://localhost:8790/api/v1` for it (`tests/test_web.py` does this).
+`.github/workflows/pages.yml` tests it in Chromium and puts it on GitHub Pages (setup in the file). Before it goes
+live:
+
+- **its own domain** (`--cname`; the workflow takes the repository variable `SCILOG_VIEWER_DOMAIN`). The token is kept
+  in the browser per origin, and `https://<org>.github.io/...` is one origin for every Pages site of the organisation;
+- **https** (GitHub Pages has it): the service worker, and so images, plots and attachments, need it;
+- the page carries a strict Content Security Policy: scripts only from the site and the editor's CDN, connections
+  only to SciLog. Plots, images and downloads opened from it run sandboxed, in no origin of the site's.
+
+The token is entered in the page as above and kept in that browser (or only in the tab, for at most 8 hours);
+"🔑 → Forget the token in this browser" removes it, which is what to do on a computer others use. The logbooks you
+allow writing to are remembered in the browser too. Not here: the beamline account (its password cannot be given to
+a web page) and eco's plugin. To try it without SciLog, `python tools/fake_scilog.py` serves the made-up logbook
+through a stand-in for SciLog's API (with its CORS behaviour) and prints the token it accepts; build with
+`--api http://localhost:8790/api/v1` for it, as `tests/test_web.py` does.
 
 **With Python:**
 

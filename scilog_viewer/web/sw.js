@@ -9,6 +9,8 @@
 
 const CACHE = "scilog-viewer-files-v1";
 const FILE = /\/(img|file)\/([0-9a-f]{24})$/;
+//: files kept in the browser's cache; past this the oldest go (they are fetched again when needed)
+const KEEP = 600;
 let auth = null;  // {token, api}
 
 self.addEventListener("install", () => self.skipWaiting());
@@ -35,14 +37,19 @@ async function askPage() {
 self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   const m = url.origin === location.origin && e.request.method === "GET" ? url.pathname.match(FILE) : null;
-  if (m) e.respondWith(serve(m[1], m[2], url.searchParams.has("download")));
+  if (m) e.respondWith(serve(m[1], m[2], url.searchParams.has("download"), url.searchParams.get("name")));
 });
 
 function text(status, message) {
   return new Response(message, { status, headers: { "Content-Type": "text/plain; charset=utf-8" } });
 }
 
-async function serve(kind, id, download) {
+async function trim(cache) {
+  const keys = await cache.keys();  // in the order they were put
+  for (const k of keys.slice(0, Math.max(0, keys.length - KEEP))) await cache.delete(k);
+}
+
+async function serve(kind, id, download, asked) {
   const cache = await caches.open(CACHE);
   const key = new URL(`${kind}/${id}`, self.registration.scope).href;
   let r = await cache.match(key);
@@ -61,15 +68,20 @@ async function serve(kind, id, download) {
     const headers = { "Content-Type": r.headers.get("content-type") || "application/octet-stream", "X-Name": name ? name[1] : "" };
     r = new Response(await r.blob(), { headers });
     await cache.put(key, r.clone());
+    trim(cache);  // not waited for
   }
   const type = r.headers.get("content-type") || "application/octet-stream";
-  const headers = new Headers({ "Content-Type": type, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
+  // every file in a sandbox of its own: an SVG or HTML opened by itself must not run in this site's origin,
+  // where the token is kept (a plot gets scripts, below, but still no origin of its own)
+  const headers = new Headers({ "Content-Type": type, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "sandbox" });
   if (kind === "img") {
     if (!type.startsWith("image/")) return text(415, "not an image");
   } else if (download || !type.includes("html")) {
-    const name = (r.headers.get("X-Name") || id).replace(/"/g, "");
+    // the name SciLog gave (if it let this site read it), else the one the link carries, else the id
+    const name = (r.headers.get("X-Name") || asked || id).replace(/[\u0000-\u001f"\\/]/g, "_").slice(0, 200);
     if (type.startsWith("text/html")) headers.set("Content-Type", "application/octet-stream");
-    headers.set("Content-Disposition", `attachment; filename="${name}"`);
+    headers.set("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(name)}`);
   } else {
     // an interactive plot: its scripts run, in an origin of their own (no token, no page)
     headers.set("Content-Type", "text/html; charset=utf-8");

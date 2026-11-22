@@ -1,6 +1,13 @@
 # The SciLog viewer as a web site (tools/build_web.py) on GitHub Pages: the viewer in the
-# browser alone, nothing to install. Runs on demand and for tags v*. The repository's
-# Settings -> Pages must have "GitHub Actions" as its source.
+# browser alone, nothing to install. Runs on demand and for tags v*, after the browser test
+# (tests/test_web.py: the built site in Chromium against a stand-in for SciLog's API).
+#
+# Set up once:
+#  - Settings -> Pages: source "GitHub Actions";
+#  - the site's own domain in the repository variable SCILOG_VIEWER_DOMAIN (Settings ->
+#    Secrets and variables -> Actions -> Variables), with its DNS pointed at GitHub Pages.
+#    Without one the site is https://<org>.github.io/<repo>/, an origin every Pages site of
+#    the organisation shares -- and the token is kept per origin (see tools/build_web.py).
 name: pages
 on:
   workflow_dispatch:
@@ -8,14 +15,27 @@ on:
     tags: ["v*"]
 permissions:
   contents: read
-  pages: write
-  id-token: write
 concurrency:
   group: pages
   cancel-in-progress: true
 jobs:
-  deploy:
+  test:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - run: pip install ".[dev]"
+      - run: npm install --no-save playwright@1.49.1 && npx playwright install --with-deps chromium
+      - run: pytest -q -s tests/test_web.py
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -23,7 +43,16 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: python tools/build_web.py --out site
+      - name: build
+        env:
+          DOMAIN: ${{ vars.SCILOG_VIEWER_DOMAIN }}
+        run: |
+          if [ -n "$DOMAIN" ]; then
+            python tools/build_web.py --out site --cname "$DOMAIN"
+          else
+            echo "::warning::No SCILOG_VIEWER_DOMAIN: the site shares its origin (and so its kept tokens) with every Pages site of this organisation"
+            python tools/build_web.py --out site
+          fi
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with: { path: site }
