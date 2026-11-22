@@ -14,8 +14,14 @@
 "use strict";
 
 (() => {
-  const CONFIG = Object.assign({ api: "https://scilog.psi.ch/api/v1", web: "https://scilog.psi.ch" },
-    window.SCILOG_BROWSER_CONFIG || {});
+  // Two ways of running: from its own web site (the default: files through the service worker, a token
+  // entered in the page) or inside SciLog's own page, started from a bookmark (inject.js: files straight
+  // from SciLog's API with SciLog's login cookie, SciLog's own login, no service worker -- and no CORS).
+  const CONFIG = Object.assign({ api: "https://scilog.psi.ch/api/v1", web: "https://scilog.psi.ch",
+    files: "worker", tokenFrom: "viewer", worker: true }, window.SCILOG_BROWSER_CONFIG || {});
+  const IN_SCILOG = CONFIG.files === "api";
+  // SciLog's API is called with the browser's own fetch, never with the page's /api/... (below)
+  const nativeFetch = window.fetch.bind(window);
   const API = CONFIG.api.replace(/\/+$/, "");
   const PAGE = 500;
   const MAX_UPLOAD = 50 * 1024 * 1024;
@@ -65,8 +71,12 @@
 
   const hhmm = (epoch) => new Date(epoch * 1000).toTimeString().slice(0, 5);
 
-  /** {token, access: "stored"|"temporary", until} or null. */
+  /** {token, access: "scilog"|"stored"|"temporary", until} or null. */
   function currentToken() {
+    if (CONFIG.tokenFrom === "scilog") {  // inside SciLog's page: its own login
+      const own = get("localStorage", "id_token");
+      if (own) return { token: cleanToken(own), access: "scilog", until: null };
+    }
     try {
       const temp = JSON.parse(get("sessionStorage", KEY_TEMP) || "null");
       if (temp && temp.token) {
@@ -90,8 +100,20 @@
   const TASK_FIELDS = { id: true, parentId: true, content: true, isDone: true, defaultOrder: true, createdAt: true, createdBy: true,
     updatedAt: true, updatedBy: true, deleted: true, updateACL: true, deleteACL: true };
 
-  const UNREACHABLE = "SciLog could not be reached from this page: no network, or SciLog does not let this web site " +
-    "call it (CORS). The installed viewer works without that.";
+  const UNREACHABLE = "SciLog cannot be reached from this browser: no network, or it is blocked on the way.";
+  const refused = () => `SciLog answers, but does not let this web site (${location.origin}) read it: its server sends `
+    + "no CORS permission for it. The SciLog operators can allow it. Meanwhile: the viewer inside SciLog's own page "
+    + "(the 🔖 bookmark in the token window), or the installed viewer.";
+
+  /** A request to SciLog failed in the browser itself: tell "refused (CORS)" from "not reached". A request
+   *  that does not ask to read the answer (no-cors) needs no permission: if that one gets through, SciLog
+   *  is there and only the permission is missing. */
+  async function whyUnreachable() {
+    try {
+      await nativeFetch(API + "/", { mode: "no-cors", credentials: "omit", cache: "no-store" });
+      return refused();
+    } catch (e) { return UNREACHABLE; }
+  }
 
   class Reader {
     constructor(token) { this.token = token; this._locations = null; }
@@ -104,7 +126,8 @@
       if (json !== undefined) { headers["Content-Type"] = "application/json"; body = JSON.stringify(json); }
       if (form) body = form;
       let r;
-      try { r = await fetch(url, { method, headers, body, mode: "cors", credentials: "omit" }); } catch (e) { throw new HttpError(502, UNREACHABLE); }
+      try { r = await nativeFetch(url, { method, headers, body, mode: "cors", credentials: IN_SCILOG ? "same-origin" : "omit" }); }
+      catch (e) { throw new HttpError(502, await whyUnreachable()); }
       if (r.status === 401) throw new TokenError(`SciLog refused the token (${who(this.token)}): log in to SciLog again and enter the new one`);
       if (r.status >= 400) {
         let detail = r.statusText;
@@ -297,9 +320,16 @@
 
   const byHash = (files) => Object.fromEntries((files || []).filter((f) => f.fileHash && f.fileId).map((f) => [f.fileHash, f]));
 
+  /** Where the page gets a file: beside it (the service worker) or, inside SciLog's page, SciLog's API itself. */
+  function fileUrl(kind, id) {
+    if (!IN_SCILOG) return `${kind}/${id}`;
+    return kind === "img" ? `${API}/images/${id}` : `${API}/filesnippet/${id}/files`;
+  }
+  const isFileUrl = (src) => src.startsWith("img/") || (IN_SCILOG && src.startsWith(`${API}/images/`));
+
   function makeImg(doc, attrs, f, forEditor) {
     const img = doc.createElement("img");
-    img.setAttribute("src", `img/${f.fileId}`);
+    img.setAttribute("src", fileUrl("img", f.fileId));
     for (const k of ["width", "height", "style", "alt"]) if (attrs.has(k)) img.setAttribute(k, attrs.get(k));
     if (!forEditor) img.setAttribute("loading", "lazy");
     return img;
@@ -326,7 +356,7 @@
     }
     for (const img of box.querySelectorAll("img")) {
       const attrs = attrMap(img), src = attrs.get("src") || "";
-      if (src.startsWith("img/")) continue;
+      if (isFileUrl(src)) continue;
       const f = hashes[attrs.get("title") || ""];
       if (f) img.replaceWith(makeImg(doc, attrs, f, forEditor));
       else if (!src.startsWith("http")) {
@@ -360,7 +390,10 @@
       const isPlot = (f.fileExtension || "").includes("html") || /\.html?$/i.test(plain);
       if (!isPlot) link.className = "attachment";
       // the file's name goes along: SciLog does not let another site read it from its answer
-      link.setAttribute("href", isPlot ? `file/${f.fileId}` : `file/${f.fileId}?download=1&name=${encodeURIComponent(plain.trim())}`);
+      link.setAttribute("href", isPlot ? fileUrl("file", f.fileId)
+        : IN_SCILOG ? fileUrl("file", f.fileId) : `file/${f.fileId}?download=1&name=${encodeURIComponent(plain.trim())}`);
+      // inside SciLog's page an attachment comes from SciLog's own origin: saved, never opened there
+      if (IN_SCILOG && !isPlot) link.setAttribute("download", plain.trim());
       link.setAttribute("target", "_blank");
       link.setAttribute("rel", "noopener");
       if (isPlot) {
@@ -384,7 +417,7 @@
       const f = href.startsWith("file:") ? hashes[href.slice(5)] : null;
       if (!f) continue;
       const link = box.ownerDocument.createElement("a");
-      link.setAttribute("href", `file/${f.fileId}`);
+      link.setAttribute("href", fileUrl("file", f.fileId));
       link.append(...a.childNodes);
       a.replaceWith(link);
     }
@@ -394,6 +427,10 @@
   /** "img/<id>" or "file/<id>" also when the editor made it an address of this page. */
   function localMatch(value) {
     let v = String(value || "");
+    if (IN_SCILOG) {  // SciLog's own addresses of a file, as fileUrl() makes them
+      const m = v.match(/\/images\/([0-9a-f]{24})(?:\?.*)?$/) || v.match(/\/filesnippet\/([0-9a-f]{24})\/files(?:\?.*)?$/);
+      if (m && v.startsWith(API)) return [v, v.includes("/images/") ? "img" : "file", m[1]];
+    }
     const base = new URL(".", location.href).href;
     if (v.startsWith(base)) v = v.slice(base.length);
     return v.match(LOCAL);
@@ -583,7 +620,7 @@
   };
 
   const Offline = {
-    supported: typeof indexedDB !== "undefined",
+    supported: typeof indexedDB !== "undefined" && !!CONFIG.worker,  // offline needs the site's own worker
     large: OFFLINE_LARGE,
     folderSupported: typeof window.showDirectoryPicker === "function",
 
@@ -713,7 +750,7 @@
       const isImage = String(meta.fileExtension || "").startsWith("image");
       const path = isImage ? `/images/${encodeURIComponent(id)}` : `/filesnippet/${encodeURIComponent(id)}/files`;
       try {
-        const r = await fetch(API + path, { headers: { Authorization: `Bearer ${reader.token}` }, mode: "cors", credentials: "omit" });
+        const r = await nativeFetch(API + path, { headers: { Authorization: `Bearer ${reader.token}` }, mode: "cors", credentials: "omit" });
         if (!r.ok) return null;
         const name = (r.headers.get("content-disposition") || "").match(/filename="?([^";]+)/);
         return { blob: await r.blob(), type: r.headers.get("content-type") || "application/octet-stream", name: name ? name[1] : "" };
@@ -840,12 +877,16 @@
       if (!cur) return { ...base, ok: false, why: "There is no SciLog token here yet", must_choose: false };
       let exp = claims(cur.token).exp;
       if (cur.access === "temporary") exp = Math.min(exp || cur.until, cur.until);
-      if (exp && exp < Date.now() / 1000) return { ...base, ok: false, why: "the SciLog token has expired", expires: exp };
+      if (exp && exp < Date.now() / 1000) {
+        return { ...base, ok: false, expires: exp, why: cur.access === "scilog"
+          ? "SciLog's login in this tab has expired: log in to SciLog again, then start the viewer from the bookmark"
+          : "the SciLog token has expired" };
+      }
       return { ...base, ok: true, identity: this.identity(cur), personal: true, access: cur.access, expires: exp || null };
     }
 
     identity(cur) {
-      return `${who(cur.token)} (${cur.access === "temporary" ? `temporary, until ${hhmm(cur.until)}` : "kept in this browser"})`;
+      return `${who(cur.token)} (${cur.access === "scilog" ? "SciLog's own login" : cur.access === "temporary" ? `temporary, until ${hhmm(cur.until)}` : "kept in this browser"})`;
     }
 
     async setToken(value, keep = true) {
@@ -1278,7 +1319,7 @@
       const snippet = await this.reader.uploadFile(file, filename, fields);
       this.uploads[snippet.id] = { fileHash: crypto.randomUUID(), fileId: snippet.id, accessHash: snippet.accessHash,
         fileExtension: isImage ? contentType : `file/${ext}` };
-      return { fileId: snippet.id, url: `${isImage ? "img" : "file"}/${snippet.id}`, name: filename, image: isImage };
+      return { fileId: snippet.id, url: fileUrl(isImage ? "img" : "file", snippet.id), name: filename, image: isImage };
     }
 
     knownFiles(raw) {
@@ -1472,7 +1513,7 @@
   window.fetch = function (input, init) {
     try {
       const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url, location.href);
-      if (url.origin === location.origin && /\/api\//.test(url.pathname)) {
+      if (url.origin === location.origin && /\/api\//.test(url.pathname) && !url.href.startsWith(API + "/")) {
         return answer(((init && init.method) || (input && input.method) || "GET").toUpperCase(), url, init);
       }
     } catch (e) { /* not ours */ }
@@ -1500,6 +1541,12 @@
   }
 
   const workerReady = (async () => {
+    if (!CONFIG.worker) {
+      // inside SciLog's page: images come with SciLog's login cookie, which its API reads as the token
+      const cur = (() => { try { return currentToken(); } catch (e) { return null; } })();
+      if (cur && !/(?:^|; )id_token=/.test(document.cookie)) document.cookie = `id_token=${cur.token}; path=/; secure; samesite=lax`;
+      return;
+    }
     if (!("serviceWorker" in navigator)) { noWorker("no service worker here: images and attachments will not show"); return; }
     navigator.serviceWorker.addEventListener("message", (e) => {
       if (e.data && e.data.want === "auth" && e.ports[0]) e.ports[0].postMessage(auth());
@@ -1509,7 +1556,7 @@
       }
     });
     try {
-      await navigator.serviceWorker.register(CONFIG.worker || "sw.js");
+      await navigator.serviceWorker.register("sw.js");
       await navigator.serviceWorker.ready;
       if (!navigator.serviceWorker.controller) {
         await new Promise((resolve) => {
@@ -1559,5 +1606,11 @@
     },
   };
 
-  window.ScilogBrowser = { config: CONFIG, store: S, offline: offlineApi, sanitize: (h) => sanitizeTree(h).innerHTML, cleanPost, editorHtml, toScilog, htmlToText };
+  // the bar holds a 🔑 badge more than with the server: the status beside it, which says the same, goes
+  // first when it is full, and no button breaks into two lines
+  const barStyle = document.createElement("style");
+  barStyle.textContent = "@media (max-width: 1450px) { #status { display: none; } } #tasks-button, #views-button, #new-post { white-space: nowrap; }";
+  document.head.append(barStyle);
+
+  window.ScilogBrowser = { config: CONFIG, inScilog: IN_SCILOG, fileUrl, store: S, offline: offlineApi, sanitize: (h) => sanitizeTree(h).innerHTML, cleanPost, editorHtml, toScilog, htmlToText };
 })();

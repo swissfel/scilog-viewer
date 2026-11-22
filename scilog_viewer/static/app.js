@@ -358,13 +358,28 @@ function preparePlot(span) {
   const bar = el("div", { class: "plot-bar" },
     el("span", { text: `📈 ${name}` }),
     el("button", { onclick: () => runPlot(span, id) }, "▶ Show the interactive plot"),
-    el("a", { href: `file/${id}?download=1`, target: "_blank", rel: "noopener" }, "download"));
+    window.ScilogBrowser?.inScilog
+      // inside SciLog's page the file comes from SciLog's own origin: saved, never opened there
+      ? el("a", { href: window.ScilogBrowser.fileUrl("file", id), download: name }, "download")
+      : el("a", { href: `file/${id}?download=1`, target: "_blank", rel: "noopener" }, "download"));
   span.replaceChildren(bar);
 }
 
 function runPlot(span, id) {
   // its own origin (the server sends CSP sandbox): no cookie, no access to this page
   const frame = el("iframe", { src: `file/${id}`, sandbox: "allow-scripts", loading: "lazy", title: span.dataset.name || "plot" });
+  if (window.ScilogBrowser?.inScilog) {
+    // inside SciLog's page: read from SciLog, given to the frame as its document; the sandbox gives it an
+    // origin of its own, so SciLog's login cannot be reached from it
+    span.querySelector("button")?.remove();
+    span.append(frame);
+    frame.removeAttribute("src");
+    fetch(window.ScilogBrowser.fileUrl("file", id), { credentials: "same-origin" })
+      .then((r) => (r.ok ? r.text() : Promise.reject(new Error(`${r.status}`))))
+      .then((html) => { frame.srcdoc = html; })
+      .catch((e) => { frame.srcdoc = `<p style="font:14px sans-serif">The plot could not be read (${e.message}).</p>`; });
+    return;
+  }
   if (window.ScilogBrowser) {
     // In the browser-only viewer the plot comes from its service worker, which gives it an origin of its own
     // (a sandbox header). A sandbox attribute would make the browser skip the worker, so there is none -- and
@@ -1486,6 +1501,26 @@ function tokenGuide() {
         el("li", {}, el("b", { text: "Keep the token to yourself:" }), " for up to 14 days it lets anyone read and write SciLog as you. Never paste it into a chat, an e-mail or a logbook."))));
 }
 
+// The browser-only viewer, started inside SciLog's own page from a bookmark (inject.js): SciLog's login,
+// no token to copy, and no CORS -- for when SciLog does not let the viewer's own site call it.
+function scilogBookmarkCard() {
+  const base = new URL(".", location.href.split("#")[0]).href;
+  const code = `javascript:(()=>{const s=document.createElement('script');s.src='${base}inject.js?'+Date.now();document.body.appendChild(s)})()`;
+  const link = el("a", { href: code, class: "tk-bookmarklet", title: "Drag this to your bookmarks bar", onclick: (e) => e.preventDefault() }, "🔖 SciLog viewer");
+  const copy = el("button", { onclick: async () => {
+    try { await navigator.clipboard.writeText(code); copy.textContent = "Copied"; } catch (e) { copy.textContent = "Select and copy it"; }
+  } }, "Copy");
+  return el("details", { class: "tk-card tk-guide" },
+    el("summary", {}, el("strong", { text: "Or: the viewer inside SciLog's own page" }),
+      el("span", { class: "tk-who", text: " — no token to copy, works where SciLog does not let this site call it" })),
+    el("ol", {},
+      el("li", {}, "Drag ", link, " to your bookmarks bar — or make a bookmark (any page) and paste this as its address: ",
+        el("code", { class: "tk-code", text: code.slice(0, 60) + " …" }), " ", copy),
+      el("li", { text: "Open SciLog (scilog.psi.ch) and log in as usual." }),
+      el("li", { text: "Click the bookmark (on a phone: type its name in the address bar and choose it). The viewer opens in that page and reads SciLog with your login there." })),
+    el("p", { class: "tk-safe", text: "It loads the viewer from this site into SciLog's page. Offline copies need this site itself, so they are not there." }));
+}
+
 // Whose SciLog access the viewer uses: the beamline account, a personal token kept here (not on a
 // shared account), or a personal token lent for at most a few hours (held by the viewer's server only).
 function openTokenDialog(status = state.token || {}) {
@@ -1532,12 +1567,13 @@ function openTokenDialog(status = state.token || {}) {
     el("div", { class: "tk-body" },
       el("p", { class: status.ok ? "" : "bad", text: current }),
       // the browser-only viewer: on a shared computer the token must be removable from the page itself
-      window.ScilogBrowser && status.ok && !status.offline ? el("p", {}, el("button", { onclick: async (ev) => {
+      window.ScilogBrowser && status.ok && !status.offline && status.access !== "scilog" ? el("p", {}, el("button", { onclick: async (ev) => {
         ev.target.disabled = true;
         try { await writeApi("/api/token/forget", "POST", {}); location.reload(); }
         catch (e) { note.textContent = `Not forgotten: ${e.message}`; note.classList.add("bad"); ev.target.disabled = false; }
       } }, "Forget the token in this browser"), el("span", { class: "tk-safe", text: " — do this on a computer others use." })) : null,
       ...cards,
+      window.ScilogBrowser && !window.ScilogBrowser.inScilog ? scilogBookmarkCard() : null,
       el("div", { class: "tk-card" },
         el("div", {}, el("strong", { text: "Your own token" }),
           el("span", { class: "tk-who", text: shared ? ` — lent for at most ${hours} hours` : "" })),

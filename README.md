@@ -75,6 +75,13 @@ live:
 - the page carries a strict Content Security Policy: scripts only from the site and the editor's CDN, connections
   only to SciLog. Plots, images and downloads opened from it run sandboxed, in no origin of the site's.
 
+**Inside SciLog's own page**, for where SciLog does not let the site call it (no CORS permission for it, as
+the site then says): a bookmark loads the viewer from the site into the SciLog page you are logged in to. It reads
+SciLog there on SciLog's own origin with SciLog's own login, so there is no token to copy and CORS does not apply.
+The token window has the bookmark ("Or: the viewer inside SciLog's own page"): drag it to the bookmarks bar, open
+SciLog, log in, click it. Offline copies need the site itself and are not there. (`inject.js`, written by
+`tools/build_web.py`; `tests/test_web_scilog.py` runs it against a stand-in SciLog without CORS.)
+
 **Offline copies** (📴 in the bar): check logbooks in a list (or all of them) to keep them in the browser, to read
 later without a network and without a token: posts, comments, tasks and, if wanted, their images, attachments and
 interactive plots. The viewer itself is kept too, so it opens offline and shows the kept logbooks read-only.

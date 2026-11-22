@@ -48,9 +48,7 @@
 #offline-button { flex: 0 0 auto; white-space: nowrap; }
 #offline-button.active { border-color: var(--accent); color: var(--accent); }
 @media (max-width: 1500px) { #offline-button .lbl { display: none; } }
-/* the 🔑 badge says whose access this is: the status beside it goes first when the bar is full */
-@media (max-width: 1450px) { #status { display: none; } }
-#tasks-button, #views-button, #new-post { white-space: nowrap; }
+
 `;
   document.head.append(css);
 

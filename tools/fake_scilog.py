@@ -1,12 +1,16 @@
 """A stand-in for SciLog's REST API, serving a made-up logbook (scilog_viewer.demo), to try
 and test the browser-only viewer (tools/build_web.py) without SciLog.
 
-    python tools/fake_scilog.py [--port 8790] [--demo DIR]
+    python tools/fake_scilog.py [--port 8790] [--demo DIR] [--no-cors]
 
 It answers the requests the viewer makes, as far as the viewer needs them (LoopBack's
 filter: where with inq/gt/lt/lte, order, skip, limit, include subsnippets), keeps what is
 written in memory, and sends CORS headers as SciLog's own API does (cors() with its
-defaults: any origin, no exposed headers). It prints the one token it accepts.
+defaults: any origin, no exposed headers) -- or, with --no-cors, none, as the SciLog at
+PSI does when another web site asks. Like SciLog it takes the token from an id_token
+cookie as well, and "/" is a stand-in for SciLog's own page, logged in (its login in
+localStorage.id_token), for the viewer started there from its bookmark (inject.js). It
+prints the one token it accepts.
 """
 
 import argparse
@@ -116,9 +120,13 @@ def query(docs, filt, data=None):
 
 class Base(tornado.web.RequestHandler):
     def set_default_headers(self):
-        self.set_header("Access-Control-Allow-Origin", "*")
+        if self.settings.get("cors", True):
+            self.set_header("Access-Control-Allow-Origin", "*")
 
     def options(self, *args):
+        if not self.settings.get("cors", True):
+            self.set_status(204)
+            return self.finish()
         self.set_header("Access-Control-Allow-Methods", "GET,HEAD,PUT,PATCH,POST,DELETE")
         self.set_header("Access-Control-Allow-Headers", self.request.headers.get("Access-Control-Request-Headers", ""))
         self.set_status(204)
@@ -127,7 +135,8 @@ class Base(tornado.web.RequestHandler):
     def prepare(self):
         if self.request.method == "OPTIONS":
             return
-        if self.request.headers.get("Authorization") != f"Bearer {self.settings['token']}":
+        given = self.request.headers.get("Authorization") or (f"Bearer {self.get_cookie('id_token')}" if self.get_cookie("id_token") else "")
+        if given != f"Bearer {self.settings['token']}":  # as SciLog's cookieToToken: the cookie stands for the header
             self.set_status(401)
             self.finish({"error": {"statusCode": 401, "message": "Authorization header not found or invalid"}})
 
@@ -280,12 +289,24 @@ class Views(Base):
         self.finish()
 
 
-def app(where=None, token=None):
+class Page(tornado.web.RequestHandler):
+    """A stand-in for SciLog's own page, logged in: its login where SciLog keeps it."""
+
+    def get(self):
+        token = json.dumps(self.settings["token"])
+        self.finish(f"""<!doctype html><html><head><meta charset="utf-8"><title>SciLog</title></head>
+<body><h1>SciLog (stand-in)</h1><p id="app">An app of its own runs here.</p>
+<script>localStorage.setItem("id_token", {token}); setInterval(() => {{ window.ticks = (window.ticks || 0) + 1; }}, 500);</script>
+</body></html>""")
+
+
+def app(where=None, token=None, cors=True):
     reader = demo.open_demo(where, quiet=True)  # makes the made-up logbook the first time
     data = Data(reader.where)
     token = token or make_token()
     id_ = r"([0-9a-f]{24})"
     return tornado.web.Application([
+        (r"/", Page),
         (r"/api/v1/users/me", Me),
         (r"/api/v1/locations", Locations),
         (r"/api/v1/logbooks/?" + f"{id_}?", Logbooks),
@@ -295,15 +316,16 @@ def app(where=None, token=None):
         (rf"/api/v1/filesnippet/{id_}(/files)?", FileSnippet),
         (r"/api/v1/tasks/?" + f"{id_}?", Tasks),
         (r"/api/v1/views/?" + f"{id_}?", Views),
-    ], data=data, token=token), token
+    ], data=data, token=token, cors=cors), token
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--port", type=int, default=8790)
     parser.add_argument("--demo", default=None, metavar="DIR", help="the made-up logbook's folder (made if missing)")
+    parser.add_argument("--no-cors", action="store_true", help="no CORS headers: another web site may not read the answers")
     args = parser.parse_args()
-    application, token = app(args.demo)
+    application, token = app(args.demo, cors=not args.no_cors)
     application.listen(args.port, "127.0.0.1")
     print(f"fake SciLog API: http://localhost:{args.port}/api/v1", flush=True)
     print(f"token: {token}", flush=True)

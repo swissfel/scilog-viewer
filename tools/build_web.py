@@ -66,6 +66,41 @@ def _version(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()[:10]
 
 
+INJECT = """// The SciLog viewer inside SciLog's own page: loaded by the bookmark
+//   javascript:(()=>{const s=document.createElement('script');s.src='<this site>/inject.js';document.body.appendChild(s)})()
+// on scilog.psi.ch. It writes the viewer (its files from this site) into that page, where it reads SciLog's
+// API on SciLog's own origin with SciLog's own login: no token to copy, and no CORS. Written by tools/build_web.py.
+(() => {
+  "use strict";
+  if (window.ScilogBrowser) return;  // already here
+  if (!localStorage.getItem("id_token")) {
+    alert("SciLog viewer: log in to SciLog in this tab first, then click the bookmark again.");
+    return;
+  }
+  const BASE = new URL(".", document.currentScript.src).href;
+  const at = (path) => new URL(path, BASE).href;
+  const config = { api: location.origin + "/api/v1", web: location.origin, files: "api", tokenFrom: "scilog", worker: false };
+  const styles = STYLES.map((p) => `<link rel="stylesheet" href="${at(p)}">`).join("");
+  const scripts = SCRIPTS.map((p) => `<script src="${at(p)}"><\\/script>`).join("");
+  document.open();
+  document.write(`<!doctype html><html lang="en"><head><meta charset="utf-8">`
+    + `<meta name="viewport" content="width=device-width, initial-scale=1"><title>SciLog viewer</title>${styles}</head>`
+    + `<body>${BODY}<script>window.SCILOG_BROWSER_CONFIG = ${JSON.stringify(config)};<\\/script>${scripts}</body></html>`);
+  document.close();
+})();
+"""
+
+
+def _inject(page):
+    """inject.js from the built index.html: its body, and its styles and scripts but the config, the
+    offline panel (it needs the site's own service worker) and the policy (SciLog's page has its own)."""
+    body = re.search(r"<body>(.*?)<script", page, re.S).group(1).strip()
+    styles = re.findall(r'<link rel="stylesheet" href="([^"]+)">', page)
+    scripts = [s for s in re.findall(r'<script src="([^"]+)"></script>', page) if not s.startswith(("config.js", "offline.js"))]
+    return (INJECT.replace("STYLES", json.dumps(styles)).replace("SCRIPTS", json.dumps(scripts))
+            .replace("BODY", json.dumps(body)))
+
+
 def build(out, api="https://scilog.psi.ch/api/v1", web="https://scilog.psi.ch", cname=None):
     out = Path(out)
     if out.exists():
@@ -99,6 +134,9 @@ def build(out, api="https://scilog.psi.ch/api/v1", web="https://scilog.psi.ch", 
     if n != 1:
         raise RuntimeError("index.html: no charset line to put the policy after")
     (out / "index.html").write_text(page)
+
+    # inject.js: the same page written into SciLog's own page, started from a bookmark there
+    (out / "inject.js").write_text(_inject(page))
 
     # the service worker keeps the site's files, to start without a network (offline copies)
     shell = ["", "index.html", "config.js", "browser.js", "offline.js"] + sorted(

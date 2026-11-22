@@ -29,7 +29,7 @@ jobs:
         with: { node-version: "20" }
       - run: pip install ".[dev]"
       - run: npm install --no-save playwright@1.63.0 && npx playwright install --with-deps chromium
-      - run: pytest -q -s tests/test_web.py
+      - run: pytest -q -s tests/test_web.py tests/test_web_scilog.py
   site:
     needs: test
     runs-on: ubuntu-latest
