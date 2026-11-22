@@ -40,7 +40,7 @@ try {
 
   await page.fill("dialog[open] textarea", "not.a-token");
   await page.click('dialog[open] button:has-text("Use this token")');
-  await page.waitForFunction(() => /Not accepted/.test(document.querySelector("dialog[open]")?.textContent || ""));
+  await page.locator("dialog[open] .tk-note", { hasText: "Not accepted" }).waitFor();
   check(true, "a wrong token is refused");
   await page.fill("dialog[open] textarea", token);
   await page.click('dialog[open] button:has-text("Use this token")');
@@ -142,14 +142,14 @@ try {
   const question = await page.locator("#offline-dialog .of-ask").textContent();
   check(/large/.test(question) && /really intended/.test(question), "a large copy is asked about before it is made");
   await page.click('#offline-dialog .of-ask button:has-text("Only the text")');
-  await page.waitForFunction((name) => /text only/.test([...document.querySelectorAll("#offline-dialog li")].find((li) => li.textContent.includes(name))
-    ?.querySelector(".of-kept")?.textContent || ""), lbName, { timeout: 60000 });
+  // locators, not waitForFunction with an argument: older Playwrights evaluate that as a string, which the page's policy refuses
+  const keptCell = (text) => page.locator("#offline-dialog li", { hasText: lbName }).locator(".of-kept", { hasText: text });
+  await keptCell("text only").waitFor({ timeout: 60000 });
   let kept = await page.evaluate(() => ScilogBrowser.offline.summary());
   check(kept.length === 1 && !kept[0].withFiles && kept[0].posts > 20, `a logbook is kept as text only (${await keptText()})`);
   await page.evaluate(() => { ScilogBrowser.offline.large = 500 * 2 ** 20; });
   await page.click("#offline-dialog .of-foot button.primary");  // the checked one again, now with its files
-  await page.waitForFunction((name) => / files /.test([...document.querySelectorAll("#offline-dialog li")].find((li) => li.textContent.includes(name))
-    ?.querySelector(".of-kept")?.textContent || ""), lbName, { timeout: 120000 });
+  await keptCell(/ files /).waitFor({ timeout: 120000 });
   kept = await page.evaluate(() => ScilogBrowser.offline.summary());
   check(kept[0].withFiles && kept[0].files >= 2 && kept[0].bytes > 0, `and with its images and attachments (${await keptText()})`);
   await page.click('#offline-dialog .of-foot button:has-text("Close")');
