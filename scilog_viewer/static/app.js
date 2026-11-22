@@ -1798,5 +1798,7 @@ window.scilogBack = pageBack;
 
 // once every script of the page is there (tasks.js, rail.js, ... come after this one): what main() starts
 // can otherwise call into one not loaded yet when SciLog answers quickly
-if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", main, { once: true });
+// (inside SciLog's page, started from its bookmark, inject.js adds the scripts one by one and starts it itself)
+if (window.SCILOG_DEFER_MAIN) window.scilogStart = main;
+else if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", main, { once: true });
 else main();

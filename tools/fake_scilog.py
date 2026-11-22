@@ -294,13 +294,18 @@ class Page(tornado.web.RequestHandler):
 
     def get(self):
         token = json.dumps(self.settings["token"])
+        nonce = ""
+        if self.settings.get("page_csp"):
+            # as a site may protect its page: only its own scripts, and what they add -- not what is written in
+            nonce = secrets.token_hex(8)
+            self.set_header("Content-Security-Policy", f"script-src 'nonce-{nonce}' 'strict-dynamic'; object-src 'none'; base-uri 'none'")
         self.finish(f"""<!doctype html><html><head><meta charset="utf-8"><title>SciLog</title></head>
 <body><h1>SciLog (stand-in)</h1><p id="app">An app of its own runs here.</p>
-<script>localStorage.setItem("id_token", {token}); setInterval(() => {{ window.ticks = (window.ticks || 0) + 1; }}, 500);</script>
+<script nonce="{nonce}">localStorage.setItem("id_token", {token}); setInterval(() => {{ window.ticks = (window.ticks || 0) + 1; }}, 500);</script>
 </body></html>""")
 
 
-def app(where=None, token=None, cors=True):
+def app(where=None, token=None, cors=True, page_csp=False):
     reader = demo.open_demo(where, quiet=True)  # makes the made-up logbook the first time
     data = Data(reader.where)
     token = token or make_token()
@@ -316,7 +321,7 @@ def app(where=None, token=None, cors=True):
         (rf"/api/v1/filesnippet/{id_}(/files)?", FileSnippet),
         (r"/api/v1/tasks/?" + f"{id_}?", Tasks),
         (r"/api/v1/views/?" + f"{id_}?", Views),
-    ], data=data, token=token, cors=cors), token
+    ], data=data, token=token, cors=cors, page_csp=page_csp), token
 
 
 if __name__ == "__main__":
@@ -324,8 +329,9 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=8790)
     parser.add_argument("--demo", default=None, metavar="DIR", help="the made-up logbook's folder (made if missing)")
     parser.add_argument("--no-cors", action="store_true", help="no CORS headers: another web site may not read the answers")
+    parser.add_argument("--page-csp", action="store_true", help="the page at / with a strict script policy (nonce, strict-dynamic)")
     args = parser.parse_args()
-    application, token = app(args.demo, cors=not args.no_cors)
+    application, token = app(args.demo, cors=not args.no_cors, page_csp=args.page_csp)
     application.listen(args.port, "127.0.0.1")
     print(f"fake SciLog API: http://localhost:{args.port}/api/v1", flush=True)
     print(f"token: {token}", flush=True)

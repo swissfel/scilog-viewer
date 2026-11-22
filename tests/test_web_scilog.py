@@ -1,7 +1,8 @@
 """The browser-only viewer where SciLog sends no CORS permission (as at PSI): the web site tells that
 apart from no network and offers the bookmark; started from it inside SciLog's own page (inject.js) the
 viewer reads and writes there with SciLog's login (tests/test_web_scilog.mjs). A stand-in for SciLog
-without CORS (tools/fake_scilog.py --no-cors) and the built site on another port; node and its
+without CORS (tools/fake_scilog.py --no-cors), its page with a strict script policy (--page-csp,
+as a production site may have), and the built site on another port; node and its
 playwright are needed, without them it is skipped."""
 import json
 import shutil
@@ -45,7 +46,7 @@ def test_the_viewer_runs_inside_scilogs_page_where_the_site_may_not_call_it(tmp_
     try:
         with open(log, "w") as out:
             procs.append(subprocess.Popen([sys.executable, str(ROOT / "tools" / "fake_scilog.py"), "--port", str(api_port),
-                                           "--demo", str(tmp_path / "demo"), "--no-cors"], stdout=out, stderr=subprocess.STDOUT))
+                                           "--demo", str(tmp_path / "demo"), "--no-cors", "--page-csp"], stdout=out, stderr=subprocess.STDOUT))
         procs.append(subprocess.Popen([sys.executable, "-m", "http.server", str(site_port), "--bind", "127.0.0.1"],
                                       cwd=site, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         _wait(api_port, procs[0], timeout=60)

@@ -81,12 +81,29 @@ INJECT = """// The SciLog viewer inside SciLog's own page: loaded by the bookmar
   const at = (path) => new URL(path, BASE).href;
   const config = { api: location.origin + "/api/v1", web: location.origin, files: "api", tokenFrom: "scilog", worker: false };
   const styles = STYLES.map((p) => `<link rel="stylesheet" href="${at(p)}">`).join("");
-  const scripts = SCRIPTS.map((p) => `<script src="${at(p)}"><\\/script>`).join("");
   document.open();
   document.write(`<!doctype html><html lang="en"><head><meta charset="utf-8">`
     + `<meta name="viewport" content="width=device-width, initial-scale=1"><title>SciLog viewer</title>${styles}</head>`
-    + `<body>${BODY}<script>window.SCILOG_BROWSER_CONFIG = ${JSON.stringify(config)};<\\/script>${scripts}</body></html>`);
+    + `<body>${BODY}</body></html>`);
   document.close();
+  // The scripts are added, not written in: a page with a strict script policy ('strict-dynamic', as a
+  // production site may have) runs scripts a script adds, but none written into the page. One after
+  // another, in their order; the viewer starts when the last is there.
+  window.SCILOG_BROWSER_CONFIG = config;
+  window.SCILOG_DEFER_MAIN = true;
+  const add = (path) => new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = at(path);
+    s.onload = resolve;
+    s.onerror = () => reject(new Error(`${path} could not be loaded`));
+    document.body.appendChild(s);
+  });
+  SCRIPTS.reduce((before, path) => before.then(() => add(path)), Promise.resolve())
+    .then(() => window.scilogStart())
+    .catch((e) => {
+      const flow = document.getElementById("flow");
+      if (flow) flow.textContent = `The viewer could not start in this page: ${e.message}. (F12, Console says more.)`;
+    });
 })();
 """
 
