@@ -71,7 +71,7 @@ w.HTMLElement.prototype.focus = function () {};
 const files = ["app.js", "editor.js", "map.js", "views.js", "pin.js", "headings.js", "postmenu.js", "tasks.js", "rail.js"];
 const src = files.map((n) => fs.readFileSync(`${DIR}/${n}`, "utf8").replace(/\nmain\(\);\s*$/, "\n")).join("\n")
   + "\nObject.assign(window, { main, state, setPane, openLogbook, flowScrolled, hideToTop,"
-  + " markDayPart, dayPart, dayTitle, updateRail, drawRailTicks, railState });\n";
+  + " markDayPart, dayPart, dayTitle, updateRail, drawRailTicks, railState, editorConfig });\n";
 try { w.eval(src); } catch (e) { console.log(`FAIL loading the page: ${e.message}\n${e.stack}`); process.exit(1); }
 const flow = w.document.getElementById("flow");
 let height = 0;
@@ -280,6 +280,18 @@ ok("the first day of a month is marked more strongly", ticks[0].classList.contai
 ok("the marks are in order and inside the track",
    ticks.every((t, i) => parseFloat(t.style.top) >= 0 && parseFloat(t.style.top) <= 800
                           && (i === 0 || parseFloat(t.style.top) >= parseFloat(ticks[i - 1].style.top))));
+
+// -- 7: writing a heading the way SciLog does -------------------------------------------------
+// CKEditor's Autoformat builds "# " out of the digit in the model name, so heading1 must be
+// the first heading whatever tag it writes. Name them after their tags and one hash does
+// nothing, which is a thing a writer notices and cannot fix.
+const heads = w.editorConfig({}, null, "").heading.options.filter((o) => o.model !== "paragraph");
+ok("one hash writes the first heading", heads[0].model === "heading1", heads[0].model);
+ok("the headings are heading1, 2, 3 in order", heads.every((o, i) => o.model === `heading${i + 1}`),
+   heads.map((o) => o.model).join(" "));
+ok("and they are still h2, h3, h4 in the post", heads.every((o, i) => o.view === `h${i + 2}`),
+   heads.map((o) => o.view).join(" "));
+ok("every heading's menu class matches its model", heads.every((o) => o.class === `ck-heading_${o.model}`));
 
 console.log(fails ? `\n${fails} FAILED` : "\nall ok");
 process.exit(fails ? 1 : 0);
