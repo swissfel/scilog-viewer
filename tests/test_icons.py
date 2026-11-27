@@ -118,3 +118,10 @@ def test_the_app_icon_is_there_for_old_launchers_too():
     icon = (RES / "mipmap-anydpi-v26" / "ic_launcher.xml").read_text()
     assert "<monochrome" in icon                         # Android 13's themed icons
     assert "@drawable/ic_launcher_background" in icon    # not a bare colour: some launchers skip it
+
+
+def test_the_page_shows_the_same_icon():
+    root = pathlib.Path(__file__).resolve().parent.parent
+    page_icon = root / "scilog_viewer" / "static" / "icon.svg"
+    assert page_icon.read_bytes() == (root / "packaging" / "icon.svg").read_bytes()
+    assert 'href="/static/icon.svg"' in (root / "scilog_viewer" / "static" / "index.html").read_text()
