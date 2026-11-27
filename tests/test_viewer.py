@@ -861,3 +861,59 @@ def test_a_plugin_provides_the_beamline_account(tmp_path, monkeypatch):
     client._functional.clear()  # what a refused token does
     client.reader()
     assert len(client.functional_login.calls) == 2
+
+
+def test_log_out_forgets_the_personal_token_and_the_beamline_account_follows(tmp_path, monkeypatch):
+    from scilog_viewer import client
+
+    monkeypatch.setattr("scilog_viewer.client._shared_account", lambda: None)
+    monkeypatch.delenv("SCILOG_TOKEN", raising=False)
+    monkeypatch.delenv("ECO_SCILOG_TOKEN", raising=False)
+    own, eco = tmp_path / "token", tmp_path / "eco_token"
+    own.write_text("a.b.c\n")
+    eco.write_text("a.b.c\n")
+    monkeypatch.setattr(client, "TOKEN_PATH", own)
+    monkeypatch.setattr(client, "ECO_TOKEN_PATH", eco)
+    beamline = _Writer(identity="the beamline account beamline@example.org")
+    monkeypatch.setattr("scilog_viewer.client.functional_available", lambda: True)
+    monkeypatch.setattr("scilog_viewer.client.reader", lambda timeout=30, personal=True: beamline)
+    store = Store(None, cache_dir=tmp_path / "files", config={"write_logbooks": [LB]})
+    store.access = "stored"
+    status = store.forget_token()
+    assert not own.exists() and not eco.exists()  # both places a kept token is read from
+    assert status["ok"] and status["access"] == "beamline" and not status["personal"]
+
+    # without a readable beamline password the page asks again
+    monkeypatch.setattr("scilog_viewer.client.functional_available", lambda: False)
+
+    def no_access(timeout=30, personal=True):
+        raise client.TokenError(client.TOKEN_HELP)
+
+    monkeypatch.setattr("scilog_viewer.client.reader", no_access)
+    store.access = "stored"
+    assert store.forget_token()["ok"] is False
+
+    # a token from the environment cannot be forgotten from the page
+    monkeypatch.setenv("SCILOG_TOKEN", "a.b.c")
+    store.access = "stored"
+    with pytest.raises(ValueError, match="SCILOG_TOKEN"):
+        store.forget_token()
+
+
+def test_log_out_on_a_shared_account_drops_the_lent_token_only(tmp_path, monkeypatch):
+    monkeypatch.setattr("scilog_viewer.client._shared_account", lambda: "shared-account")
+    monkeypatch.setattr("scilog_viewer.client.functional_available", lambda: True)
+    monkeypatch.setattr("scilog_viewer.client.token", lambda path=None: pytest.fail("a kept token was looked for"))
+    beamline = _Writer(identity="the beamline account beamline@example.org")
+    monkeypatch.setattr("scilog_viewer.client.reader", lambda timeout=30, personal=True: beamline)
+    store = Store(None, cache_dir=tmp_path / "files", config={"write_logbooks": [LB]})
+    store._temporary, store.access = ("x.y.z", time.time() + 3600), "temporary"
+    status = store.forget_token()
+    assert store._temporary is None and status["ok"] and status["access"] == "beamline"
+
+
+def test_the_log_out_endpoint_is_a_write(server):
+    req = urllib.request.Request(f"http://localhost:{server.port}/api/token/forget?token=sesame", data=b"{}", method="POST")
+    with pytest.raises(urllib.error.HTTPError) as err:  # no X-Eco-Scilog header: refused
+        urllib.request.urlopen(req, timeout=10)
+    assert err.value.code == 403

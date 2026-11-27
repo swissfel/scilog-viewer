@@ -302,6 +302,24 @@ class Store:
             self.access = "temporary"
         return self.token_status()
 
+    def forget_token(self):
+        """Log out: forget the personal token in use -- a lent one is dropped from this process,
+        a kept one is deleted from disk -- and return the new token_status(). The beamline
+        account is used next if its password is readable here; otherwise the page asks again.
+        A token from $SCILOG_TOKEN cannot be forgotten from here."""
+        if self.access != "temporary" and not logs_scilog._shared_account():
+            for _ in range(3):  # the viewer's own file and eco's may both hold one
+                _value, where = logs_scilog.token()
+                if where is None:
+                    break
+                if where == "$SCILOG_TOKEN":
+                    raise ValueError("this token comes from $SCILOG_TOKEN: unset it and start the viewer again")
+                Path(where).unlink(missing_ok=True)
+        self._forget_access()
+        if logs_scilog.functional_available():
+            self.access = "beamline"
+        return self.token_status()
+
     # -- who is reading, and may they write --------------------------------------
 
     def me(self):
@@ -1167,6 +1185,13 @@ class _TokenSet(_Write):
         await self.run(self.app.store.set_token, str(b.get("token") or ""), bool(b.get("keep", True)))
 
 
+class _TokenForget(_Write):
+    """Log out: forget the personal token in use."""
+
+    async def post(self):
+        await self.run(self.app.store.forget_token)
+
+
 class _Access(_Write):
     """Read SciLog as the beamline account or with the stored personal token."""
 
@@ -1248,6 +1273,7 @@ class ScilogApp:
                 (r"/api/me", _Me),
                 (r"/api/token", _Token),
                 (r"/api/token/set", _TokenSet),
+                (r"/api/token/forget", _TokenForget),
                 (r"/api/access", _Access),
                 (r"/api/logbooks", _Logbooks),
                 (r"/api/posts", _Posts),

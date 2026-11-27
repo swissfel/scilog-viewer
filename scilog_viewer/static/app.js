@@ -1567,12 +1567,17 @@ function openTokenDialog(status = state.token || {}) {
       el("button", { title: "Close", onclick: () => dialog.close() }, "✕")),
     el("div", { class: "tk-body" },
       el("p", { class: status.ok ? "" : "bad", text: current }),
-      // the browser-only viewer: on a shared computer the token must be removable from the page itself
-      window.ScilogBrowser && status.ok && !status.offline && status.access !== "scilog" ? el("p", {}, el("button", { onclick: async (ev) => {
+      // log out: the browser-only viewer forgets every token in this browser; the viewer's server
+      // forgets the personal token in use (a lent one from memory, a kept one from disk)
+      status.ok && !status.offline && status.access !== "scilog" && (window.ScilogBrowser || status.personal) ? el("p", {}, el("button", { onclick: async (ev) => {
         ev.target.disabled = true;
         try { await writeApi("/api/token/forget", "POST", {}); location.reload(); }
         catch (e) { note.textContent = `Not forgotten: ${e.message}`; note.classList.add("bad"); ev.target.disabled = false; }
-      } }, "Forget the token in this browser"), el("span", { class: "tk-safe", text: " — do this on a computer others use." })) : null,
+      } }, window.ScilogBrowser ? "Forget the token in this browser" : "Log out: forget this token"),
+        el("span", { class: "tk-safe", text: window.ScilogBrowser ? " — do this on a computer others use."
+          : status.access === "temporary" ? " — the viewer drops the lent token at once."
+          : " — removes the token kept on this computer (eco uses the same one)." +
+            (opts.beamline?.available ? " The beamline account is used next." : "") })) : null,
       ...cards,
       window.ScilogBrowser && !window.ScilogBrowser.inScilog ? scilogBookmarkCard() : null,
       el("div", { class: "tk-card" },

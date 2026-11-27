@@ -123,7 +123,9 @@ from the login and cannot be renewed**; three days before, a badge in the bar sa
 and `$SCILOG_TOKEN` work too, and eco's `~/.eco/scilog_token` is used if present. Never keep a personal token on an
 account several people use: there (listed in `$SCILOG_VIEWER_SHARED_ACCOUNTS`) the viewer only *borrows* a
 token, held in memory for at most 8 hours and never written to disk. Anywhere, the token window's "Keep it" box
-decides between keeping a token and borrowing it.
+decides between keeping a token and borrowing it. To log out, click the badge in the bar, then "Log out: forget this
+token": a borrowed token is dropped at once, a kept one is deleted from disk (from eco's file too). Where a plugin
+provides a beamline account and its password is readable, the viewer reads SciLog as that account from then on.
 
 ### From a phone
 
